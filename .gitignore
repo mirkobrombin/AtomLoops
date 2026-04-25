@@ -1,0 +1,8 @@
+out/
+*.efi
+*.img
+*.iso
+*.tar.xz
+*.tar.gz
+*.cpio.gz
+*.raw
