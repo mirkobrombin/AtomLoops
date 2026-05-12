@@ -7,6 +7,8 @@ SRC="scripts/boot/initramfs-main.go"
 OUT="out/initramfs.cpio.gz"
 VOID_ROOTFS="out/void-rootfs"
 VOID_MODS="${VOID_ROOTFS}/usr/lib/modules/6.12.82_1"
+MODS_DIR="${ATOM_MODS:-${VOID_MODS}}"
+MOD_VER="$(basename "${MODS_DIR}")"
 
 echo "[initramfs-build] compiling ${SRC}"
 
@@ -109,9 +111,9 @@ fi
 # Copy kernel modules from Void rootfs (matching kernel 6.12.82_1).
 MOD_OK=false
 
-if [ -d "${VOID_MODS}/kernel" ]; then
-    ver_name="6.12.82_1"
-    echo "[initramfs-build] copying+decompressing Void modules from ${VOID_MODS}"
+if [ -d "${MODS_DIR}/kernel" ]; then
+    ver_name="${MOD_VER}"
+    echo "[initramfs-build] copying+decompressing modules from ${MODS_DIR}"
     mkdir -p "out/initramfs-staging/lib/modules/${ver_name}"
     for mod_spec in \
         "drivers/virtio/virtio.ko" \
@@ -130,8 +132,12 @@ if [ -d "${VOID_MODS}/kernel" ]; then
         "crypto/crc32c_generic.ko" \
         "crypto/xxhash_generic.ko" \
         "fs/erofs/erofs.ko" \
-        "fs/overlayfs/overlay.ko"; do
-        found=$(find "${VOID_MODS}/kernel" -path "*/${mod_spec}*" -type f 2>/dev/null | head -1)
+        "fs/overlayfs/overlay.ko" \
+        "crc16.ko" \
+        "fs/mbcache.ko" \
+        "fs/jbd2/jbd2.ko" \
+        "fs/ext4/ext4.ko"; do
+        found=$(find "${MODS_DIR}/kernel" -path "*/${mod_spec}*" -type f 2>/dev/null | head -1)
         [ -z "${found}" ] && continue
         dest="out/initramfs-staging/lib/modules/${ver_name}/$(basename "$mod_spec")"
         if [[ "${found}" == *.xz ]]; then

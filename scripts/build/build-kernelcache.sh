@@ -4,10 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 ROOTFS_DIR="out/void-rootfs"
-VMLINUX="${ROOTFS_DIR}/boot/vmlinuz-6.12.82_1"
+VMLINUX="${ATOM_KERNEL:-${ROOTFS_DIR}/boot/vmlinuz-6.12.82_1}"
 INITRAMFS="out/initramfs.cpio.gz"
 ROOT_HASH=$(cat out/rootfs-v1.roothash)
-CMDLINE="console=ttyS0 root=/dev/vdb ATOM_ROOT_HASH=${ROOT_HASH} ro"
+CMDLINE="console=ttyS0 console=tty0 ATOM_ROOT_HASH=${ROOT_HASH} ro"
 OUTPUT="out/kernelcache-v1.efi"
 
 echo "[build-kernelcache] assembling UKI ${OUTPUT}"
@@ -31,14 +31,16 @@ if command -v ukify &>/dev/null; then
         --cmdline="${CMDLINE}" \
         --output="${OUTPUT}"
 else
-    echo "[build-kernelcache] ukify not found, using objcopy fallback"
-    cp "${VMLINUX}" "${OUTPUT}"
+    echo "[build-kernelcache] ukify not found, using systemd-stub + objcopy"
+    STUB="/usr/lib/systemd/boot/efi/linuxx64.efi.stub"
+    BASE=$((16#$(objdump -p "${STUB}" | awk '/ImageBase/{print $2}')))
+    vma() { printf "0x%x" $((BASE + $1)); }
+    printf '%s' "${CMDLINE}" > out/cmdline.txt
     objcopy \
-        --add-section .initrd="${INITRAMFS}" \
-        --set-section-flags .initrd=readonly,data \
-        --add-section .cmdline=<(printf '%s' "${CMDLINE}") \
-        --set-section-flags .cmdline=readonly,data \
-        "${OUTPUT}" "${OUTPUT}"
+        --add-section .cmdline=out/cmdline.txt --change-section-vma .cmdline=$(vma 0x110000) \
+        --add-section .linux="${VMLINUX}" --change-section-vma .linux=$(vma 0x200000) \
+        --add-section .initrd="${INITRAMFS}" --change-section-vma .initrd=$(vma 0x2000000) \
+        "${STUB}" "${OUTPUT}"
 fi
 
 echo "[build-kernelcache] done: ${OUTPUT}"
