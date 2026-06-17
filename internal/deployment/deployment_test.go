@@ -99,7 +99,7 @@ func TestWALRoundTripAndSelfHeal(t *testing.T) {
 
 func TestDeployStabilizePromote(t *testing.T) {
 	d := New("dev-1", "v1", 1)
-	d.Deploy("v2", 2)
+	d.Deploy("v2")
 
 	if tgt, pending := d.PickBootTarget(); tgt != "v2" || !pending {
 		t.Fatalf("PickBootTarget = %q,%v; want v2,true", tgt, pending)
@@ -144,9 +144,16 @@ func TestDeployStabilizePromote(t *testing.T) {
 
 func TestFailedCandidateRollsBack(t *testing.T) {
 	d := New("dev-1", "v1", 1)
-	d.Deploy("v2", 2)
+	d.Deploy("v2")
 
-	// Three boots with no good-boot record: the budget drains to zero.
+	// One good boot switches to v2 (kernelcache 1 -> 2), then it starts failing.
+	d.DecrementBootAttempt()
+	d.RecordGoodBoot()
+	if d.RootFS.Current != "v2" || d.Kernelcache.CurrentVersion != 2 {
+		t.Fatalf("switch wrong: current=%s kc=%d", d.RootFS.Current, d.Kernelcache.CurrentVersion)
+	}
+
+	// The refreshed budget now drains to zero across consecutive failed boots.
 	var exhausted bool
 	for i := 0; i < 3; i++ {
 		exhausted = d.DecrementBootAttempt()
@@ -161,6 +168,9 @@ func TestFailedCandidateRollsBack(t *testing.T) {
 	if d.RootFS.Current != "v1" || d.HasPending() || d.Kernelcache.State != KCStable {
 		t.Fatalf("rollback state wrong: %+v", d.RootFS)
 	}
+	if d.Kernelcache.CurrentVersion != 1 {
+		t.Errorf("kernelcache not reverted with rootfs (1:1 coupling): kc=%d, want 1", d.Kernelcache.CurrentVersion)
+	}
 }
 
 func TestRecoveryWhenNoGoodFallback(t *testing.T) {
@@ -168,7 +178,7 @@ func TestRecoveryWhenNoGoodFallback(t *testing.T) {
 	d := New("dev-1", "v1", 1)
 	d.RootFS.LastKnownGood = ""
 	d.RootFS.Rollback = ""
-	d.Deploy("v2", 2)
+	d.Deploy("v2")
 	for i := 0; i < 3; i++ {
 		d.DecrementBootAttempt()
 	}

@@ -1,9 +1,32 @@
 package deployment
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // nowFn is the clock, swapped in tests for deterministic timestamps.
 var nowFn = time.Now
+
+// kcOf derives a kernelcache version from a rootfs version string. Per the v4.6
+// review, rootfs and kernelcache versions are coupled 1:1 (rootfs "v43" <-> kc
+// 43), so the kernelcache integer is the trailing digit run of the rootfs version.
+// Returns ok=false when the version carries no trailing integer, in which case
+// callers leave the kernelcache version untouched.
+func kcOf(rootfsVersion string) (int, bool) {
+	i := len(rootfsVersion)
+	for i > 0 && rootfsVersion[i-1] >= '0' && rootfsVersion[i-1] <= '9' {
+		i--
+	}
+	if i == len(rootfsVersion) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rootfsVersion[i:])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
 
 func timestamp() string { return nowFn().UTC().Format(time.RFC3339) }
 
@@ -36,11 +59,14 @@ func New(deviceID, rootfsVersion string, kcVersion int) *Deployment {
 // Deploy stages a verified candidate as pending and arms the boot-attempt budget.
 // It does NOT change current: the switch is recorded on the candidate's first
 // good boot (RecordGoodBoot), so a candidate that never boots cleanly leaves
-// current untouched. Call after the rootfs/kernelcache artifacts are on disk.
-func (d *Deployment) Deploy(rootfsVersion string, kcVersion int) {
+// current untouched. The kernelcache version is derived from the rootfs version
+// (coupled 1:1). Call after the rootfs/kernelcache artifacts are on disk.
+func (d *Deployment) Deploy(rootfsVersion string) {
 	d.RootFS.Pending = rootfsVersion
 	d.RootFS.BootAttempts = d.RootFS.MaxAttempts
-	d.Kernelcache.PendingVersion = kcVersion
+	if kc, ok := kcOf(rootfsVersion); ok {
+		d.Kernelcache.PendingVersion = kc
+	}
 	d.Kernelcache.State = KCUpdating
 	d.Kernelcache.StableBoots = 0
 }
@@ -112,19 +138,18 @@ func (d *Deployment) DecrementBootAttempt() (exhausted bool) {
 // Rollback abandons the pending candidate and returns to last_known_good, the
 // version guaranteed to have booted stable_threshold times; its artifacts are
 // already on the device. Called by the initramfs when the boot budget is spent,
-// or by the daemon on an explicit rollback.
-//
-// NOTE for review (B): this reverts the rootfs pointer. The kernelcache pointer
-// (kernelcache.current_version) is not reverted here because the WAL does not
-// store last_known_good's kernelcache version; in practice the initramfs boots
-// kernelcache-prev.efi from the ESP. Whether we should add last_known_good_kc to
-// the schema, or couple rootfs<->kc versions 1:1, is an open protocol question.
+// or by the daemon on an explicit rollback. Because rootfs and kernelcache
+// versions are coupled 1:1, the kernelcache version is reverted to match the
+// rootfs it falls back to.
 func (d *Deployment) Rollback() {
 	switch {
 	case d.RootFS.LastKnownGood != "":
 		d.RootFS.Current = d.RootFS.LastKnownGood
 	case d.RootFS.Rollback != "":
 		d.RootFS.Current = d.RootFS.Rollback
+	}
+	if kc, ok := kcOf(d.RootFS.Current); ok {
+		d.Kernelcache.CurrentVersion = kc
 	}
 	d.RootFS.Pending = ""
 	d.RootFS.BootAttempts = 0
