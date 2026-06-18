@@ -64,7 +64,7 @@ func TestSchemaMatchesA61Example(t *testing.T) {
 
 func TestWALRoundTripAndSelfHeal(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "deployment.json")
-	d := New("dev-1", "v1", 1)
+	d := New("dev-1", "v1")
 	if err := d.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestWALRoundTripAndSelfHeal(t *testing.T) {
 }
 
 func TestDeployStabilizePromote(t *testing.T) {
-	d := New("dev-1", "v1", 1)
+	d := New("dev-1", "v1")
 	d.Deploy("v2")
 
 	if tgt, pending := d.PickBootTarget(); tgt != "v2" || !pending {
@@ -143,7 +143,7 @@ func TestDeployStabilizePromote(t *testing.T) {
 }
 
 func TestFailedCandidateRollsBack(t *testing.T) {
-	d := New("dev-1", "v1", 1)
+	d := New("dev-1", "v1")
 	d.Deploy("v2")
 
 	// One good boot switches to v2 (kernelcache 1 -> 2), then it starts failing.
@@ -175,7 +175,7 @@ func TestFailedCandidateRollsBack(t *testing.T) {
 
 func TestRecoveryWhenNoGoodFallback(t *testing.T) {
 	// A candidate in flight with no last_known_good (e.g. first-ever image failing).
-	d := New("dev-1", "v1", 1)
+	d := New("dev-1", "v1")
 	d.RootFS.LastKnownGood = ""
 	d.RootFS.Rollback = ""
 	d.Deploy("v2")

@@ -31,9 +31,11 @@ func kcOf(rootfsVersion string) (int, bool) {
 func timestamp() string { return nowFn().UTC().Format(time.RFC3339) }
 
 // New returns a fresh WAL for a device booting its first image, already stable
-// (that image is its own last_known_good). Defaults: 3 boot attempts, 3 stable
+// (that image is its own last_known_good). The kernelcache version is derived
+// from the rootfs version (coupled 1:1). Defaults: 3 boot attempts, 3 stable
 // boots to promote, UKI kernelcache.
-func New(deviceID, rootfsVersion string, kcVersion int) *Deployment {
+func New(deviceID, rootfsVersion string) *Deployment {
+	kc, _ := kcOf(rootfsVersion)
 	return &Deployment{
 		RootFS: RootFS{
 			Current:         rootfsVersion,
@@ -42,7 +44,7 @@ func New(deviceID, rootfsVersion string, kcVersion int) *Deployment {
 			LastKnownGoodAt: timestamp(),
 		},
 		Kernelcache: Kernelcache{
-			CurrentVersion:  kcVersion,
+			CurrentVersion:  kc,
 			State:           KCStable,
 			StableThreshold: 3,
 			Format:          "uki",
