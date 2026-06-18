@@ -101,8 +101,8 @@ func TestDeployStabilizePromote(t *testing.T) {
 	d := New("dev-1", "v1")
 	d.Deploy("v2")
 
-	if tgt, pending := d.PickBootTarget(); tgt != "v2" || !pending {
-		t.Fatalf("PickBootTarget = %q,%v; want v2,true", tgt, pending)
+	if tgt, pending := d.BootVersion(); tgt != "v2" || !pending {
+		t.Fatalf("BootVersion = %q,%v; want v2,true", tgt, pending)
 	}
 	if d.RootFS.BootAttempts != 3 || d.Kernelcache.State != KCUpdating {
 		t.Fatalf("Deploy did not arm: attempts=%d state=%s", d.RootFS.BootAttempts, d.Kernelcache.State)

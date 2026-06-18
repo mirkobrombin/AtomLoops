@@ -114,9 +114,10 @@ func (d *Deployment) promote() {
 
 // --- Initramfs-side transitions (early boot) ---
 
-// PickBootTarget returns the rootfs version the initramfs should boot and whether
-// it is the pending candidate. Read-only.
-func (d *Deployment) PickBootTarget() (version string, pending bool) {
+// BootVersion returns the rootfs version the initramfs will boot and whether it
+// is the pending candidate. Read-only; useful for logging. For which on-disk
+// slot to boot, use PickBootTarget.
+func (d *Deployment) BootVersion() (version string, pending bool) {
 	if d.HasPending() {
 		return d.RootFS.Pending, true
 	}
