@@ -15,8 +15,8 @@ for the rest of the native bits (boot-splash, preload shims, utilities) too.
 ## Status
 - [x] Phase 1: toolchain + UEFI entry + console banner -> `bootx64.efi` (PE32+ EFI app)
 - [x] Phase 2: GOP frame-zero surface paint (fills the backdrop color)
-- [ ] Phase 3: read deployment.json from the ESP + slot selection
-- [ ] Phase 4: LoadImage/StartImage the signed UKI (framebuffer preserved)
+- [ ] Phase 3b: read ESP deployment.json + PickBootTarget slot -> chainload that UKI
+- [x] Phase 3-4: LoadImage/StartImage chainload from the ESP (QEMU-verified via stage2)
 - [ ] Phase 5: TPM PCR measurement; hidden in-surface image chooser
 
 ## Build
