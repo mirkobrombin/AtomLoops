@@ -29,23 +29,45 @@ fn puts(s: []const u8) void {
     if (con_out.outputString(buf[0..i :0])) |_| {} else |_| {}
 }
 
-fn paintSurface() bool {
-    const bs = uefi.system_table.boot_services orelse return false;
+// renderSurface paints frame zero: the backdrop, then a centered logo/wallpaper
+// composited from ESP:/EFI/atom/surface.bin ([u32 w][u32 h][w*h BGRX]). Missing or
+// malformed asset leaves the backdrop alone. The framebuffer is never mode-reset
+// after this, so every later layer inherits these pixels.
+fn renderSurface(root: *File) void {
+    const bs = uefi.system_table.boot_services orelse return;
     const GraphicsOutput = uefi.protocol.GraphicsOutput;
-    const g = (bs.locateProtocol(GraphicsOutput, null) catch return false) orelse return false;
+    const g = (bs.locateProtocol(GraphicsOutput, null) catch return) orelse return;
     const mode = g.mode;
     const info = mode.info;
     const width: usize = info.horizontal_resolution;
     const height: usize = info.vertical_resolution;
     const stride: usize = info.pixels_per_scan_line;
     const fb: [*]volatile u32 = @ptrFromInt(mode.frame_buffer_base);
+
     const backdrop: u32 = 0x00101828;
     var y: usize = 0;
     while (y < height) : (y += 1) {
         var x: usize = 0;
         while (x < width) : (x += 1) fb[y * stride + x] = backdrop;
     }
-    return true;
+
+    const asset = readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\surface.bin")) orelse return;
+    defer uefi.pool_allocator.free(asset);
+    if (asset.len < 8) return;
+    const lw: usize = std.mem.readInt(u32, asset[0..][0..4], .little);
+    const lh: usize = std.mem.readInt(u32, asset[4..][0..4], .little);
+    if (lw == 0 or lh == 0 or lw > width or lh > height) return;
+    if (asset.len < 8 + lw * lh * 4) return;
+    const ox = (width - lw) / 2;
+    const oy = (height - lh) / 2;
+    var yy: usize = 0;
+    while (yy < lh) : (yy += 1) {
+        var xx: usize = 0;
+        while (xx < lw) : (xx += 1) {
+            const off = 8 + (yy * lw + xx) * 4;
+            fb[(oy + yy) * stride + (ox + xx)] = std.mem.readInt(u32, asset[off..][0..4], .little);
+        }
+    }
 }
 
 fn openRoot() ?*File {
@@ -179,12 +201,12 @@ fn chainloadSlot(root: *File, slot: []const u8) bool {
 
 pub fn main() void {
     puts("Atom Loops loader (prototype)\r\n");
-    _ = paintSurface();
 
     const root = openRoot() orelse {
         puts("no ESP volume\r\n");
         while (true) {}
     };
+    renderSurface(root);
 
     var slot: []const u8 = "kernelcache-active.efi";
     if (readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\deployment.json"))) |w| {
