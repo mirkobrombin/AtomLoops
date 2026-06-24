@@ -1,5 +1,7 @@
 *.efi
 *.ppm
 *.png
-zig-cache/
+*.sig
+pubkey.zig
 .zig-cache/
+zig-cache/

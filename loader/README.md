@@ -16,6 +16,7 @@ for the rest of the native bits (boot-splash, preload shims, utilities) too.
 - [x] Phase 1: toolchain + UEFI entry + console banner -> `bootx64.efi` (PE32+ EFI app)
 - [x] Phase 2: GOP frame-zero surface paint (fills the backdrop color)
 - [x] Phase 6: read ESP deployment.json + PickBootTarget slot select -> chainload (QEMU-verified)
+- [x] Phase 7: Ed25519 self-verify of the selected slot before chaining (QEMU-verified, valid accepted + tampered rejected)
 - [x] Phase 3-4: LoadImage/StartImage chainload from the ESP (QEMU-verified via stage2)
 - [ ] Phase 5: TPM PCR measurement; hidden in-surface image chooser
 

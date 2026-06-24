@@ -1,12 +1,20 @@
 // Atom Loops custom EFI loader (prototype). Go-explicit Zig: every fallible call
 // checked at the call site, no hidden control flow, no panics in normal paths.
 //   Phase 1-2: UEFI app + GOP frame-zero paint.
-//   Phase 3-4: LoadImage/StartImage chainload from the ESP (framebuffer preserved).
-//   Phase 6 (this file): read ESP deployment.json + PickBootTarget slot -> chainload
-//            that kernelcache. (Signature verify + TPM measure are later phases.)
+//   Phase 3-4: LoadImage/StartImage chainload (framebuffer preserved).
+//   Phase 6: read ESP deployment.json + PickBootTarget slot select.
+//   Phase 7 (this file): Ed25519 self-verify the selected kernelcache before
+//            chaining it (std.crypto, no external deps). A bad signature is fatal
+//            for that slot. TPM measure + logo composite are later phases.
 const std = @import("std");
 const uefi = std.os.uefi;
 const File = uefi.protocol.File;
+
+// The Atom Loops root/signing public key, embedded at build time (A4.1). The
+// loader refuses to chain any kernelcache whose Ed25519 signature does not verify
+// against this key -- the security floor that holds even without firmware Secure
+// Boot (required for aarch64 / no-SB targets).
+const root_pubkey = [32]u8{ 0x93, 0x45, 0xd8, 0x5d, 0x98, 0x4e, 0x41, 0x6a, 0xc1, 0x65, 0x9e, 0x6c, 0xcb, 0x6a, 0x01, 0xb5, 0x6c, 0x4b, 0x85, 0xbd, 0x13, 0xe6, 0x48, 0xa2, 0x47, 0x5a, 0x37, 0x95, 0xa1, 0x66, 0x91, 0xfd };
 
 fn puts(s: []const u8) void {
     const con_out = uefi.system_table.con_out orelse return;
@@ -40,7 +48,6 @@ fn paintSurface() bool {
     return true;
 }
 
-// openRoot returns the root directory of the volume the loader was loaded from.
 fn openRoot() ?*File {
     const bs = uefi.system_table.boot_services orelse return null;
     const li = (bs.handleProtocol(uefi.protocol.LoadedImage, uefi.handle) catch return null) orelse return null;
@@ -75,10 +82,9 @@ fn valueStart(buf: []const u8, key: []const u8) ?usize {
     return i;
 }
 
-// stringFieldNonEmpty is true when key's value is a non-null, non-empty JSON string.
 fn stringFieldNonEmpty(buf: []const u8, key: []const u8) bool {
     const i = valueStart(buf, key) orelse return false;
-    if (i >= buf.len or buf[i] != '"') return false; // null or absent
+    if (i >= buf.len or buf[i] != '"') return false;
     return i + 1 < buf.len and buf[i + 1] != '"';
 }
 
@@ -103,9 +109,6 @@ fn parseWal(buf: []const u8) Wal {
     };
 }
 
-// pickSlot mirrors the shared PickBootTarget: candidate+budget -> next;
-// candidate+spent+fallback -> prev; candidate+spent+no-fallback -> recovery;
-// else active.
 fn pickSlot(w: Wal) []const u8 {
     if (w.has_pending and w.boot_attempts <= 0 and !w.has_lkg) return "kernelcache-recovery.efi";
     if (w.has_pending and w.boot_attempts <= 0) return "kernelcache-prev.efi";
@@ -113,29 +116,65 @@ fn pickSlot(w: Wal) []const u8 {
     return "kernelcache-active.efi";
 }
 
-fn chainloadPath(root: *File, path16: [*:0]const u16) bool {
-    const bs = uefi.system_table.boot_services orelse return false;
-    const img = readFile(root, path16) orelse return false;
-    defer uefi.pool_allocator.free(img);
-    const handle = bs.loadImage(false, uefi.handle, .{ .buffer = img }) catch return false;
-    _ = bs.startImage(handle) catch return false;
+// atomPath builds \EFI\atom\<name><suffix> as a null-terminated UTF-16 path.
+fn atomPath(buf: []u16, name: []const u8, suffix: []const u8) [:0]const u16 {
+    var i: usize = 0;
+    for ("\\EFI\\atom\\") |c| {
+        buf[i] = c;
+        i += 1;
+    }
+    for (name) |c| {
+        buf[i] = c;
+        i += 1;
+    }
+    for (suffix) |c| {
+        buf[i] = c;
+        i += 1;
+    }
+    buf[i] = 0;
+    return buf[0..i :0];
+}
+
+// verifyEd25519 checks img against a 64-byte detached signature using the embedded
+// root key. Returns false on any problem, so the caller refuses the slot.
+fn verifyEd25519(img: []const u8, sigbuf: []const u8) bool {
+    if (sigbuf.len != 64) return false;
+    const Ed = std.crypto.sign.Ed25519;
+    const pk = Ed.PublicKey.fromBytes(root_pubkey) catch return false;
+    var sigbytes: [64]u8 = undefined;
+    @memcpy(&sigbytes, sigbuf[0..64]);
+    const sig = Ed.Signature.fromBytes(sigbytes);
+    sig.verify(img, pk) catch return false;
     return true;
 }
 
-// chainloadSlot builds \EFI\atom\<slot> as UTF-16 and chainloads it.
+// chainloadSlot reads \EFI\atom\<slot>, verifies its detached .sig against the root
+// key, and only then hands control to it (framebuffer preserved).
 fn chainloadSlot(root: *File, slot: []const u8) bool {
-    var path: [96]u16 = undefined;
-    var i: usize = 0;
-    for ("\\EFI\\atom\\") |c| {
-        path[i] = c;
-        i += 1;
+    const bs = uefi.system_table.boot_services orelse return false;
+    var pbuf: [96]u16 = undefined;
+    const img = readFile(root, atomPath(&pbuf, slot, "")) orelse {
+        puts("slot image missing\r\n");
+        return false;
+    };
+    defer uefi.pool_allocator.free(img);
+
+    var sbuf: [96]u16 = undefined;
+    const sig = readFile(root, atomPath(&sbuf, slot, ".sig")) orelse {
+        puts("slot signature missing -- refusing\r\n");
+        return false;
+    };
+    defer uefi.pool_allocator.free(sig);
+
+    if (!verifyEd25519(img, sig)) {
+        puts("signature INVALID -- refusing to chain\r\n");
+        return false;
     }
-    for (slot) |c| {
-        path[i] = c;
-        i += 1;
-    }
-    path[i] = 0;
-    return chainloadPath(root, path[0..i :0]);
+    puts("signature OK\r\n");
+
+    const handle = bs.loadImage(false, uefi.handle, .{ .buffer = img }) catch return false;
+    _ = bs.startImage(handle) catch return false;
+    return true;
 }
 
 pub fn main() void {
@@ -158,6 +197,6 @@ pub fn main() void {
     puts("selected slot: ");
     puts(slot);
     puts("\r\n");
-    if (!chainloadSlot(root, slot)) puts("chainload FAILED\r\n");
+    if (!chainloadSlot(root, slot)) puts("boot HALTED (no valid slot)\r\n");
     while (true) {}
 }
