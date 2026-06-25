@@ -1,6 +1,6 @@
 # Atom Loops EFI loader (prototype)
 
-A thin custom UEFI loader for the "one continuous surface" boot: it paints frame
+A thin custom UEFI loader (v1 feature-complete; QEMU+OVMF+swtpm verified) for the "one continuous surface" boot: it paints frame
 zero of the surface in EFI, reads `deployment.json` from the ESP to pick the image
 (active / pending / recovery via the shared slot-selection logic), measures into the
 TPM, and chain-loads the signed UKI, preserving the framebuffer so there is no black

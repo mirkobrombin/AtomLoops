@@ -242,6 +242,41 @@ fn chainloadSlot(root: *File, slot: []const u8) bool {
     return true;
 }
 
+// pollKey polls the console for a keypress across a short window (ms). A press opens
+// the hidden chooser; otherwise the surface flows straight through to boot.
+fn pollKey(window_ms: usize) bool {
+    const bs = uefi.system_table.boot_services orelse return false;
+    const con_in = uefi.system_table.con_in orelse return false;
+    var elapsed: usize = 0;
+    while (elapsed < window_ms) : (elapsed += 50) {
+        if (con_in.readKeyStroke()) |_| {
+            return true;
+        } else |_| {}
+        bs.stall(50 * 1000) catch {};
+    }
+    return false;
+}
+
+// runChooser shows the slots in-surface and returns the one the user picks. Faithful
+// to policy: recovery is always offered as the safe floor; a manual pick does not pin.
+fn runChooser() []const u8 {
+    puts("[chooser] 1=active  2=prev  3=recovery\r\n");
+    const con_in = uefi.system_table.con_in orelse return "kernelcache-active.efi";
+    const bs = uefi.system_table.boot_services;
+    var tries: usize = 0;
+    while (tries < 240) : (tries += 1) {
+        if (con_in.readKeyStroke()) |k| {
+            switch (k.unicode_char) {
+                '2' => return "kernelcache-prev.efi",
+                '3' => return "kernelcache-recovery.efi",
+                else => return "kernelcache-active.efi",
+            }
+        } else |_| {}
+        if (bs) |b| b.stall(50 * 1000) catch {};
+    }
+    return "kernelcache-active.efi";
+}
+
 pub fn main() void {
     puts("Atom Loops loader (prototype)\r\n");
 
@@ -250,6 +285,18 @@ pub fn main() void {
         while (true) {}
     };
     renderSurface(root);
+
+    // Hidden in-surface chooser: a keypress in a short window opens it.
+    puts("chooser: press a key...\r\n");
+    if (pollKey(3000)) {
+        puts("chooser opened\r\n");
+        const chosen = runChooser();
+        puts("chooser -> ");
+        puts(chosen);
+        puts("\r\n");
+        if (!chainloadSlot(root, chosen)) puts("boot HALTED\r\n");
+        while (true) {}
+    }
 
     var slot: []const u8 = "kernelcache-active.efi";
     if (readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\deployment.json"))) |w| {
