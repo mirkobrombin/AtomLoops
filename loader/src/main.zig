@@ -9,6 +9,7 @@
 const std = @import("std");
 const uefi = std.os.uefi;
 const File = uefi.protocol.File;
+const cc = uefi.cc;
 
 // The Atom Loops root/signing public key, embedded at build time (A4.1). The
 // loader refuses to chain any kernelcache whose Ed25519 signature does not verify
@@ -170,6 +171,47 @@ fn verifyEd25519(img: []const u8, sigbuf: []const u8) bool {
     return true;
 }
 
+// Minimal EFI_TCG2_PROTOCOL binding (not in std): enough to measure an image into a
+// PCR via HashLogExtendEvent. TCG2 is exposed only when the firmware has a TPM, so
+// locating it is itself the TPM-present test.
+const Tcg2 = extern struct {
+    _get_capability: *const anyopaque,
+    _get_event_log: *const anyopaque,
+    _hash_log_extend_event: *const fn (*const Tcg2, u64, u64, u64, *const anyopaque) callconv(cc) uefi.Status,
+    _submit_command: *const anyopaque,
+    _get_active_pcr_banks: *const anyopaque,
+    _set_active_pcr_banks: *const anyopaque,
+    _get_result_of_set_active_pcr_banks: *const anyopaque,
+
+    pub const guid align(8) = uefi.Guid{
+        .time_low = 0x607f766c,
+        .time_mid = 0x7455,
+        .time_high_and_version = 0x42be,
+        .clock_seq_high_and_reserved = 0x93,
+        .clock_seq_low = 0x0b,
+        .node = [_]u8{ 0xe4, 0xd7, 0x6d, 0xb2, 0x72, 0x0f },
+    };
+};
+
+// measureIntoPcr hashes img and extends TPM PCR 8 with it (measured boot), logging an
+// EV_EFI_BOOT_SERVICES_APPLICATION event. Returns false when no TPM is present, in
+// which case the loader runs at Level 1 -- not fatal.
+fn measureIntoPcr(img: []const u8) bool {
+    const bs = uefi.system_table.boot_services orelse return false;
+    const tcg2 = (bs.locateProtocol(Tcg2, null) catch return false) orelse return false;
+    const desc = "atom-loader:kernelcache";
+    var ev: [64]u8 = undefined;
+    const total: u32 = 4 + 14 + @as(u32, @intCast(desc.len));
+    std.mem.writeInt(u32, ev[0..4], total, .little);
+    std.mem.writeInt(u32, ev[4..8], 14, .little);
+    std.mem.writeInt(u16, ev[8..10], 1, .little);
+    std.mem.writeInt(u32, ev[10..14], 8, .little);
+    std.mem.writeInt(u32, ev[14..18], 0x80000003, .little);
+    @memcpy(ev[18 .. 18 + desc.len], desc);
+    const st = tcg2._hash_log_extend_event(tcg2, 0, @intFromPtr(img.ptr), @as(u64, img.len), &ev);
+    return st == .success;
+}
+
 // chainloadSlot reads \EFI\atom\<slot>, verifies its detached .sig against the root
 // key, and only then hands control to it (framebuffer preserved).
 fn chainloadSlot(root: *File, slot: []const u8) bool {
@@ -193,6 +235,7 @@ fn chainloadSlot(root: *File, slot: []const u8) bool {
         return false;
     }
     puts("signature OK\r\n");
+    if (measureIntoPcr(img)) puts("TPM: measured into PCR 8\r\n") else puts("TPM: absent, Level 1\r\n");
 
     const handle = bs.loadImage(false, uefi.handle, .{ .buffer = img }) catch return false;
     _ = bs.startImage(handle) catch return false;
