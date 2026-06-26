@@ -3,11 +3,13 @@
 //
 //	atomd boot-success [--wal P] [--health-dir D]   greenboot: confirm/promote a candidate
 //	atomd status       [--wal P]                    print the WAL summary
-//	atomd deploy <ver> [--wal P]                    stage a candidate (WAL transition)
+//	atomd stage --manifest URL [--wal P] [--pubkey F] fetch+verify+stage a signed update
+//	atomd deploy <ver> [--wal P]                    mark a local candidate pending (WAL only)
 //	atomd rollback     [--wal P]                    return to last_known_good
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -43,6 +45,27 @@ func run(args []string) int {
 			return 2
 		}
 		return report(otad.Init(*wal, *dev, fs.Arg(0)))
+	case "stage":
+		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		wal := fs.String("wal", defaultWAL, "path to deployment.json")
+		manifest := fs.String("manifest", "", "signed manifest URL to fetch")
+		pubkeyPath := fs.String("pubkey", "/etc/atom/root.pub", "root public key file (32 raw bytes)")
+		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "where rootfs-next lands")
+		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "where kernelcache-next lands")
+		if err := fs.Parse(rest); err != nil {
+			return 2
+		}
+		if *manifest == "" {
+			fmt.Fprintln(os.Stderr, "atomd stage: --manifest URL required")
+			return 2
+		}
+		pubkey, err := os.ReadFile(*pubkeyPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "atomd stage: read pubkey: %v\n", err)
+			return 1
+		}
+		return report(otad.Stage(context.Background(), *wal, *manifest, pubkey,
+			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir}))
 	case "boot-success":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
