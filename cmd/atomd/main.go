@@ -5,6 +5,7 @@
 //	atomd status       [--wal P]                    print the WAL summary
 //	atomd stage --manifest URL [--wal P] [--pubkey F] fetch+verify+stage a signed update
 //	atomd deploy <ver> [--wal P]                    mark a local candidate pending (WAL only)
+//	atomd run [--manifest URL] [--wal P] [--cron C]  daemon: greenboot at start + scheduled update checks
 //	atomd rollback     [--wal P]                    return to last_known_good
 package main
 
@@ -13,9 +14,54 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/mirkobrombin/atomloops/internal/otad"
+	"github.com/mirkobrombin/go-foundation/pkg/scheduler"
 )
+
+// runDaemon is atomd as a long-running service under the init: it confirms/promotes
+// the current boot (greenboot) at startup, then, if a manifest is configured, checks
+// for updates on a schedule (go-foundation's scheduler) and stages any it verifies.
+// Blocks until SIGTERM/SIGINT.
+func runDaemon(wal, healthDir, manifestURL, pubkeyPath, cron string, dirs otad.StageDirs) int {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	if msg, err := otad.BootSuccess(wal, healthDir); err != nil {
+		fmt.Fprintln(os.Stderr, "atomd: boot-success:", err)
+	} else {
+		fmt.Println(msg)
+	}
+
+	sched := scheduler.New(scheduler.WithLogger(func(m string) { fmt.Println("atomd:", m) }))
+	if manifestURL != "" {
+		pubkey, err := os.ReadFile(pubkeyPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "atomd: read pubkey: %v\n", err)
+			return 1
+		}
+		sched.Register(scheduler.Job{
+			Name: "update-check",
+			Cron: cron,
+			Handler: func(ctx context.Context) error {
+				msg, err := otad.Stage(ctx, wal, manifestURL, pubkey, dirs)
+				if err == nil {
+					fmt.Println("atomd:", msg)
+				}
+				return err
+			},
+		})
+	}
+	if err := sched.Start(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "atomd:", err)
+		return 1
+	}
+	<-ctx.Done()
+	_ = sched.Stop(context.Background())
+	return 0
+}
 
 const defaultWAL = "/boot/rootfs/deployment.json"
 const defaultHealthDir = "/etc/atom/health.d"
@@ -45,6 +91,20 @@ func run(args []string) int {
 			return 2
 		}
 		return report(otad.Init(*wal, *dev, fs.Arg(0)))
+	case "run":
+		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		wal := fs.String("wal", defaultWAL, "path to deployment.json")
+		hd := fs.String("health-dir", defaultHealthDir, "health-check executables dir")
+		manifest := fs.String("manifest", "", "manifest URL to poll for updates (empty = greenboot only)")
+		pubkeyPath := fs.String("pubkey", "/etc/atom/root.pub", "root public key file")
+		cron := fs.String("cron", "0 * * * *", "update-check cron (default hourly)")
+		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "where rootfs-next lands")
+		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "where kernelcache-next lands")
+		if err := fs.Parse(rest); err != nil {
+			return 2
+		}
+		return runDaemon(*wal, *hd, *manifest, *pubkeyPath, *cron,
+			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir})
 	case "stage":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
