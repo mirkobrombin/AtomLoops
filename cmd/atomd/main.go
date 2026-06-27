@@ -18,6 +18,7 @@ import (
 	"syscall"
 
 	"github.com/mirkobrombin/atomloops/internal/otad"
+	"github.com/mirkobrombin/atomloops/internal/recovery"
 	"github.com/mirkobrombin/go-foundation/pkg/scheduler"
 )
 
@@ -105,6 +106,19 @@ func run(args []string) int {
 		}
 		return runDaemon(*wal, *hd, *manifest, *pubkeyPath, *cron,
 			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir})
+	case "recover":
+		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		wal := fs.String("wal", defaultWAL, "path to deployment.json")
+		addr := fs.String("addr", ":7654", "recovery HTTP listen address")
+		if err := fs.Parse(rest); err != nil {
+			return 2
+		}
+		fmt.Printf("atomd: recovery API on %s\n", *addr)
+		if err := recovery.New(*wal).ListenAndServe(*addr); err != nil {
+			fmt.Fprintln(os.Stderr, "atomd:", err)
+			return 1
+		}
+		return 0
 	case "stage":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
