@@ -40,7 +40,7 @@ func Init(walPath, deviceID, rootfsVersion string) (string, error) {
 // reaches stable_threshold). With no candidate in flight it is a no-op. A failed
 // health gate leaves the WAL untouched, so boot_attempts continues to drain and
 // the initramfs will roll the candidate back on a later boot.
-func BootSuccess(walPath, healthDir string) (string, error) {
+func BootSuccess(walPath, healthDir string, store CounterStore) (string, error) {
 	d, err := deployment.Load(walPath)
 	if err != nil {
 		return "", err
@@ -57,7 +57,15 @@ func BootSuccess(walPath, healthDir string) (string, error) {
 		return "", err
 	}
 	if promoted {
-		return fmt.Sprintf("candidate %s promoted to last_known_good", cand), nil
+		// Arm the monotonic anti-rollback counter only now, after the candidate has
+		// stabilized (A4.2), so a faulty update never advances the floor.
+		if store != nil {
+			if err := store.Advance(uint64(d.AntiRollback.CounterValue)); err != nil {
+				return "", fmt.Errorf("promoted %s but arming anti-rollback counter failed: %w", cand, err)
+			}
+		}
+		return fmt.Sprintf("candidate %s promoted to last_known_good (anti-rollback counter %d)",
+			cand, d.AntiRollback.CounterValue), nil
 	}
 	return fmt.Sprintf("good boot recorded for candidate %s (%d/%d stable)",
 		cand, d.Kernelcache.StableBoots, d.Kernelcache.StableThreshold), nil

@@ -61,7 +61,7 @@ func TestBootSuccessPromotes(t *testing.T) {
 	// Three good boots promote the candidate.
 	var last string
 	for i := 0; i < 3; i++ {
-		msg, err := BootSuccess(wal, health)
+		msg, err := BootSuccess(wal, health, nil)
 		if err != nil {
 			t.Fatalf("BootSuccess %d: %v", i, err)
 		}
@@ -91,7 +91,7 @@ func TestBootSuccessHealthGateFailsLeavesWALUntouched(t *testing.T) {
 
 	health := t.TempDir()
 	writeScript(t, filepath.Join(health, "10-bad"), "exit 1")
-	if _, err := BootSuccess(wal, health); err == nil {
+	if _, err := BootSuccess(wal, health, nil); err == nil {
 		t.Fatal("BootSuccess should fail when the health gate fails")
 	}
 	after, _ := deployment.Load(wal)
@@ -104,7 +104,7 @@ func TestBootSuccessHealthGateFailsLeavesWALUntouched(t *testing.T) {
 
 func TestBootSuccessNoCandidate(t *testing.T) {
 	wal := newWAL(t)
-	msg, err := BootSuccess(wal, filepath.Join(t.TempDir(), "none"))
+	msg, err := BootSuccess(wal, filepath.Join(t.TempDir(), "none"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

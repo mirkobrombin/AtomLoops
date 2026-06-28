@@ -26,11 +26,11 @@ import (
 // the current boot (greenboot) at startup, then, if a manifest is configured, checks
 // for updates on a schedule (go-foundation's scheduler) and stages any it verifies.
 // Blocks until SIGTERM/SIGINT.
-func runDaemon(wal, healthDir, manifestURL, pubkeyPath, cron string, dirs otad.StageDirs) int {
+func runDaemon(wal, healthDir, counterPath, manifestURL, pubkeyPath, cron string, dirs otad.StageDirs) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	if msg, err := otad.BootSuccess(wal, healthDir); err != nil {
+	if msg, err := otad.BootSuccess(wal, healthDir, otad.FileCounter{Path: counterPath}); err != nil {
 		fmt.Fprintln(os.Stderr, "atomd: boot-success:", err)
 	} else {
 		fmt.Println(msg)
@@ -66,6 +66,7 @@ func runDaemon(wal, healthDir, manifestURL, pubkeyPath, cron string, dirs otad.S
 
 const defaultWAL = "/boot/rootfs/deployment.json"
 const defaultHealthDir = "/etc/atom/health.d"
+const defaultCounter = "/var/lib/atom/anti-rollback"
 
 var version = "dev"
 
@@ -99,12 +100,13 @@ func run(args []string) int {
 		manifest := fs.String("manifest", "", "manifest URL to poll for updates (empty = greenboot only)")
 		pubkeyPath := fs.String("pubkey", "/etc/atom/root.pub", "root public key file")
 		cron := fs.String("cron", "0 * * * *", "update-check cron (default hourly)")
+		counter := fs.String("counter", defaultCounter, "anti-rollback counter file")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "where rootfs-next lands")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "where kernelcache-next lands")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
-		return runDaemon(*wal, *hd, *manifest, *pubkeyPath, *cron,
+		return runDaemon(*wal, *hd, *counter, *manifest, *pubkeyPath, *cron,
 			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir})
 	case "recover":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
@@ -144,10 +146,11 @@ func run(args []string) int {
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
 		hd := fs.String("health-dir", defaultHealthDir, "directory of health-check executables")
+		counter := fs.String("counter", defaultCounter, "anti-rollback counter file")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
-		return report(otad.BootSuccess(*wal, *hd))
+		return report(otad.BootSuccess(*wal, *hd, otad.FileCounter{Path: *counter}))
 	case "status":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")

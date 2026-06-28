@@ -1,0 +1,49 @@
+package otad
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestFileCounterMonotonic(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "count")
+	c := FileCounter{Path: p}
+	if v, _ := c.Read(); v != 0 {
+		t.Fatalf("fresh counter = %d, want 0", v)
+	}
+	if err := c.Advance(43); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := c.Read(); v != 43 {
+		t.Fatalf("after advance = %d, want 43", v)
+	}
+	// Regress attempt is a no-op, never lowers the floor.
+	if err := c.Advance(40); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := c.Read(); v != 43 {
+		t.Errorf("counter regressed to %d, want 43", v)
+	}
+}
+
+func TestBootSuccessArmsCounter(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	wal := newWAL(t)
+	if _, err := Deploy(wal, "v2"); err != nil {
+		t.Fatal(err)
+	}
+	cnt := FileCounter{Path: filepath.Join(t.TempDir(), "count")}
+	health := t.TempDir()
+	for i := 0; i < 3; i++ {
+		if _, err := BootSuccess(wal, health, cnt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// v2 promoted -> counter armed to the kernelcache version (2).
+	if v, _ := cnt.Read(); v != 2 {
+		t.Errorf("anti-rollback counter = %d, want 2 after promotion", v)
+	}
+}
