@@ -58,6 +58,19 @@ func Stage(ctx context.Context, walPath, manifestURL string, pubkey []byte, dirs
 		return "", err
 	}
 
+	// Software anti-rollback (A4.2, level L1): refuse to stage a manifest whose
+	// version is a downgrade below the currently installed one. At the hardware
+	// levels (L4/L5) the monotonic counter enforces this at boot; here we refuse
+	// to even stage a downgrade, so a rolled-back signing key cannot push an old,
+	// vulnerable image.
+	cur, err := deployment.Load(walPath)
+	if err != nil {
+		return "", err
+	}
+	if isDowngrade(m.Version, cur.RootFS.Current) {
+		return "", fmt.Errorf("stage: %s is below installed %s -- refused (anti-rollback)", m.Version, cur.RootFS.Current)
+	}
+
 	// 2. rootfs -> /boot/rootfs/rootfs-next.erofs, verified.
 	if err := os.MkdirAll(dirs.Rootfs, 0o755); err != nil {
 		return "", err
@@ -94,4 +107,32 @@ func Stage(ctx context.Context, walPath, manifestURL string, pubkey []byte, dirs
 		return "", err
 	}
 	return fmt.Sprintf("staged %s (rootfs + kernelcache fetched + verified); reboot to try it", m.Version), nil
+}
+
+// versionNum extracts the trailing integer of a version string (v43 -> 43).
+func versionNum(v string) (int, bool) {
+	i := len(v)
+	for i > 0 && v[i-1] >= '0' && v[i-1] <= '9' {
+		i--
+	}
+	if i == len(v) {
+		return 0, false
+	}
+	n := 0
+	for _, c := range v[i:] {
+		n = n*10 + int(c-'0')
+	}
+	return n, true
+}
+
+// isDowngrade reports whether newV is numerically below curV. If either version
+// lacks a numeric component the comparison declines (returns false) rather than
+// blocking a legitimate non-numeric scheme.
+func isDowngrade(newV, curV string) bool {
+	n, ok1 := versionNum(newV)
+	c, ok2 := versionNum(curV)
+	if !ok1 || !ok2 {
+		return false
+	}
+	return n < c
 }

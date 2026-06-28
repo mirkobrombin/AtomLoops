@@ -96,3 +96,29 @@ func TestStageRejectsBadSignature(t *testing.T) {
 		t.Errorf("rejected update still marked the WAL pending: %+v", d.RootFS)
 	}
 }
+
+func TestStageRefusesDowngrade(t *testing.T) {
+	// Server offers v2, but the device is already on v5: anti-rollback must refuse.
+	base, pub := stageServer(t, false)
+	wal := filepath.Join(t.TempDir(), "deployment.json")
+	if err := deployment.New("dev-1", "v5").Save(wal); err != nil {
+		t.Fatal(err)
+	}
+	dirs := StageDirs{Rootfs: filepath.Join(t.TempDir(), "r"), ESP: filepath.Join(t.TempDir(), "e")}
+	if _, err := Stage(context.Background(), wal, base+"/manifest.json", pub, dirs); err == nil {
+		t.Fatal("Stage must refuse a downgrade (v2 < installed v5)")
+	}
+	d, _ := deployment.Load(wal)
+	if d.HasPending() {
+		t.Errorf("refused downgrade still marked pending: %+v", d.RootFS)
+	}
+}
+
+func TestVersionNum(t *testing.T) {
+	if n, ok := versionNum("v43"); !ok || n != 43 {
+		t.Errorf("versionNum(v43) = %d,%v", n, ok)
+	}
+	if !isDowngrade("v2", "v5") || isDowngrade("v6", "v5") || isDowngrade("x", "y") {
+		t.Error("isDowngrade wrong")
+	}
+}
