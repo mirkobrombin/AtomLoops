@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 type Deployment struct {
@@ -32,22 +33,19 @@ type Deployment struct {
 	} `json:"security"`
 }
 
-var deployPath = "/boot/rootfs/deployment.json"
-var backupPath = "/boot/rootfs/deployment.json.bak"
+const sysFinitModule = 313
 
 func insmod(path string) {
-	if _, err := os.Stat(path); err != nil {
+	f, err := os.Open(path)
+	if err != nil {
 		return
 	}
-	insmodBin := "/sbin/insmod"
-	if _, err := os.Stat(insmodBin); err != nil {
-		insmodBin = "/bin/insmod"
-	}
-	cmd := exec.Command(insmodBin, path)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "[init] insmod %s: %v\n", path, err)
+	defer f.Close()
+	param := []byte{0}
+	_, _, errno := syscall.Syscall(sysFinitModule, f.Fd(),
+		uintptr(unsafe.Pointer(&param[0])), 0)
+	if errno != 0 && errno != syscall.EEXIST {
+		fmt.Fprintf(os.Stderr, "[init] finit_module %s: %v\n", path, errno)
 	} else {
 		fmt.Printf("[init] loaded %s\n", path)
 	}
@@ -83,31 +81,15 @@ func loadKernelModules() {
 			modPath + "/dm-verity.ko",
 			modPath + "/erofs.ko",
 			modPath + "/overlay.ko",
+			modPath + "/crc16.ko",
+			modPath + "/mbcache.ko",
+			modPath + "/jbd2.ko",
+			modPath + "/ext4.ko",
 		}
 		for _, m := range mods {
 			insmod(m)
 		}
 	}
-}
-
-func findRootDevice() string {
-	data, err := os.ReadFile("/proc/cmdline")
-	if err != nil {
-		return ""
-	}
-	for _, field := range strings.Fields(string(data)) {
-		if strings.HasPrefix(field, "root=") {
-			dev := strings.TrimPrefix(field, "root=")
-			if strings.HasPrefix(dev, "/dev/") {
-				return dev
-			}
-			if strings.HasPrefix(dev, "UUID=") || strings.HasPrefix(dev, "LABEL=") {
-				// return empty and use possibleRoot fallback.
-				return ""
-			}
-		}
-	}
-	return ""
 }
 
 func findRootHash() string {
@@ -123,13 +105,120 @@ func findRootHash() string {
 	return ""
 }
 
-func possibleRoot() string {
-	for _, dev := range []string{"/dev/vda", "/dev/sda", "/dev/hda"} {
-		if _, err := os.Stat(dev); err == nil {
-			return dev
+func devCandidates() []string {
+	var out []string
+	for _, b := range []string{
+		"/dev/vda", "/dev/vdb", "/dev/vdc", "/dev/vdd",
+		"/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sdd",
+		"/dev/nvme0n1", "/dev/mmcblk0",
+	} {
+		out = append(out, b)
+		for i := 1; i <= 4; i++ {
+			out = append(out, fmt.Sprintf("%s%d", b, i))
+			out = append(out, fmt.Sprintf("%sp%d", b, i))
 		}
 	}
-	return ""
+	return out
+}
+
+func losetupBin() string {
+	if _, err := os.Stat("/sbin/losetup"); err == nil {
+		return "/sbin/losetup"
+	}
+	return "/bin/losetup"
+}
+
+func loopAttach(file string) string {
+	bin := losetupBin()
+	out, err := exec.Command(bin, "-f").Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[init] losetup -f: %v\n", err)
+		return ""
+	}
+	loop := strings.TrimSpace(string(out))
+	if o, err := exec.Command(bin, "-r", loop, file).CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "[init] losetup %s -> %s: %v %s\n", file, loop, err, strings.TrimSpace(string(o)))
+		return ""
+	}
+	fmt.Printf("[init] %s -> %s\n", file, loop)
+	return loop
+}
+
+func mountSystem() (string, bool) {
+	target := "/sysdata"
+	os.MkdirAll(target, 0755)
+	for _, dev := range devCandidates() {
+		if _, err := os.Stat(dev); err != nil {
+			continue
+		}
+		if syscall.Mount(dev, target, "ext4", syscall.MS_RDONLY, "") != nil {
+			continue
+		}
+		if _, err := os.Stat(target + "/boot/rootfs/rootfs-active.erofs"); err == nil {
+			fmt.Printf("[init] system partition: %s\n", dev)
+			return target, true
+		}
+		syscall.Unmount(target, 0)
+	}
+	return "", false
+}
+
+func setupVerity(sysMount string) string {
+	erofsFile := sysMount + "/boot/rootfs/rootfs-active.erofs"
+	hashFile := sysMount + "/boot/rootfs/rootfs-active.hash"
+
+	dataLoop := loopAttach(erofsFile)
+	if dataLoop == "" {
+		return ""
+	}
+
+	rootHash := findRootHash()
+	if rootHash == "" || rootHash == "pending" {
+		fmt.Println("[init] ATOM_ROOT_HASH not set, mounting rootfs without dm-verity")
+		return dataLoop
+	}
+	fmt.Printf("[init] root_hash: %s\n", rootHash)
+
+	if _, err := os.Stat("/sbin/veritysetup"); err != nil {
+		fmt.Println("[init] veritysetup missing, mounting unverified")
+		return dataLoop
+	}
+	hashLoop := loopAttach(hashFile)
+	if hashLoop == "" {
+		return dataLoop
+	}
+
+	cmd := exec.Command("/sbin/veritysetup", "open", dataLoop, "atom-verity", hashLoop, rootHash)
+	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/lib")
+	if o, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "[init] veritysetup open failed: %v %s\n", err, strings.TrimSpace(string(o)))
+		return dataLoop
+	}
+	verityDev := "/dev/mapper/atom-verity"
+	if _, err := os.Stat(verityDev); err != nil {
+		fmt.Fprintf(os.Stderr, "[init] %s missing after open\n", verityDev)
+		return dataLoop
+	}
+	fmt.Printf("[init] dm-verity active on %s\n", verityDev)
+	return verityDev
+}
+
+func mountVar(rootMount string) bool {
+	target := rootMount + "/var"
+	for _, dev := range devCandidates() {
+		if _, err := os.Stat(dev); err != nil {
+			continue
+		}
+		if syscall.Mount(dev, target, "ext4", 0, "") != nil {
+			continue
+		}
+		if _, err := os.Stat(target + "/.atom-var"); err == nil {
+			fmt.Printf("[init] persistent /var: %s\n", dev)
+			return true
+		}
+		syscall.Unmount(target, 0)
+	}
+	return false
 }
 
 func dropToShell() {
@@ -142,195 +231,92 @@ func dropToShell() {
 	cmd.Run()
 }
 
-func runVeritySetup(dataDev string) string {
-	rootHash := findRootHash()
-	if rootHash == "" || rootHash == "pending" {
-		fmt.Println("[init] ATOM_ROOT_HASH not set, skipping dm-verity")
-		return dataDev
-	}
-	fmt.Printf("[init] root_hash from cmdline: %s\n", rootHash)
-
-	hashFile := "/boot/rootfs/rootfs-v1.hash"
-	if _, err := os.Stat(hashFile); err != nil {
-		fmt.Fprintf(os.Stderr, "[init] hash tree not found at %s: %v\n", hashFile, err)
-		return dataDev
-	}
-
-	verityBin := "/sbin/veritysetup"
-	if _, err := os.Stat(verityBin); err != nil {
-		fmt.Println("[init] veritysetup not found, mounting data device directly")
-		return dataDev
-	}
-	fmt.Printf("[init] veritysetup found at %s\n", verityBin)
-
-	// Set up a loop device for the hash tree file so veritysetup can use it
-	// as a block device. Busybox losetup doesn't support --show, so we find
-	// the next free loop device first, then attach.
-	fmt.Printf("[init] setting up loop device for hash tree %s\n", hashFile)
-	losetupBin := "/bin/losetup"
-	if _, err := os.Stat(losetupBin); err != nil {
-		losetupBin = "/sbin/losetup"
-	}
-
-	out, err := exec.Command(losetupBin, "-f").Output()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[init] losetup -f failed: %v\n", err)
-		return dataDev
-	}
-	loopDev := strings.TrimSpace(string(out))
-	fmt.Printf("[init] next free loop device: %s (using %s)\n", loopDev, losetupBin)
-
-	attachOut, err := exec.Command(losetupBin, "-r", loopDev, hashFile).CombinedOutput()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[init] losetup attach failed: %v\n", err)
-		fmt.Fprintf(os.Stderr, "[init] losetup output: %s\n", strings.TrimSpace(string(attachOut)))
-		return dataDev
-	}
-	if len(attachOut) > 0 {
-		fmt.Printf("[init] losetup output: %s\n", strings.TrimSpace(string(attachOut)))
-	}
-	fmt.Printf("[init] hash tree loop device: %s\n", loopDev)
-
-	var cmd *exec.Cmd
-	fmt.Printf("[init] running veritysetup open %s atom-verity %s %s\n", dataDev, loopDev, rootHash)
-	cmd = exec.Command(verityBin, "open", dataDev, "atom-verity", loopDev, rootHash)
-	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/lib")
-	vOut, vErr := cmd.CombinedOutput()
-	if len(vOut) > 0 {
-		fmt.Printf("[init] veritysetup output: %s\n", strings.TrimSpace(string(vOut)))
-	}
-	if vErr != nil {
-		fmt.Fprintf(os.Stderr, "[init] veritysetup open failed: %v\n", vErr)
-		fmt.Println("[init] falling back to direct mount (unverified)")
-		exec.Command(losetupBin, "-d", loopDev).Run()
-		return dataDev
-	}
-
-	verityDev := "/dev/mapper/atom-verity"
-	if _, err := os.Stat(verityDev); err != nil {
-		fmt.Fprintf(os.Stderr, "[init] dm-verity device %s not found: %v\n", verityDev, err)
-		exec.Command(losetupBin, "-d", loopDev).Run()
-		return dataDev
-	}
-	fmt.Printf("[init] dm-verity active on %s\n", verityDev)
-	return verityDev
-}
-
-func readDeployment() (Deployment, error) {
+func readDeployment(path, backup string) (Deployment, error) {
 	var d Deployment
-	data, err := os.ReadFile(deployPath)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return d, err
-	}
-	if err := json.Unmarshal(data, &d); err != nil {
-		data, err = os.ReadFile(backupPath)
+		data, err = os.ReadFile(backup)
 		if err != nil {
 			return d, err
 		}
-		if err := json.Unmarshal(data, &d); err != nil {
-			return d, err
-		}
+	}
+	if err := json.Unmarshal(data, &d); err != nil {
+		return d, err
 	}
 	return d, nil
 }
 
 func main() {
-	fmt.Println("[init] Atom Loops initramfs starting")
+	fmt.Println("[init] Atom Loops initramfs starting (file-based rootfs)")
 
-	// Mount basic virtual filesystems.
-	fmt.Println("[init] mounting virtual filesystems")
 	syscall.Mount("proc", "/proc", "proc", 0, "")
 	syscall.Mount("sysfs", "/sys", "sysfs", 0, "")
 	syscall.Mount("devtmpfs", "/dev", "devtmpfs", 0, "")
 
-	// Load kernel modules for virtio and erofs support in QEMU.
 	fmt.Println("[init] loading kernel modules")
 	loadKernelModules()
 
-	// Find root device.
-	rootDev := findRootDevice()
-	if rootDev == "" {
-		rootDev = possibleRoot()
-	}
-	if rootDev == "" {
-		fmt.Fprintf(os.Stderr, "[init] no root device found\n")
-		dropToShell()
-		return
-	}
-	fmt.Printf("[init] root device candidate: %s\n", rootDev)
-
-	// Activate dm-verity if a hash device exists.
-	// The hash device is expected to be rootDev with suffix ".hash".
-	verityDev := runVeritySetup(rootDev)
-	fmt.Printf("[init] using verified device: %s\n", verityDev)
-
-	// Try to mount rootfs (EROFS preferred).
-	rootMount := "/newroot"
-	os.MkdirAll(rootMount, 0755)
-
-	mounted := false
-	for _, fs := range []string{"erofs", "ext4"} {
-		if syscall.Mount(verityDev, rootMount, fs, syscall.MS_RDONLY, "") == nil {
-			fmt.Printf("[init] mounted %s on %s as %s\n", verityDev, rootMount, fs)
-			mounted = true
-			break
-		} else {
-			fmt.Fprintf(os.Stderr, "[init] mount %s as %s failed\n", verityDev, fs)
-		}
-	}
-
-	if !mounted {
-		fmt.Fprintf(os.Stderr, "[init] no rootfs mounted, dropping to shell for debug\n")
+	sysMount, ok := mountSystem()
+	if !ok {
+		fmt.Fprintf(os.Stderr, "[init] no Atom Loops system partition found\n")
 		dropToShell()
 		return
 	}
 
-	overlayMount := "/newroot-overlay"
-	os.MkdirAll(overlayMount, 0755)
-	os.MkdirAll("/overlay", 0755)
-	if syscall.Mount("tmpfs", "/overlay", "tmpfs", 0, "size=128M") == nil {
-		os.MkdirAll("/overlay/upper", 0755)
-		os.MkdirAll("/overlay/work", 0755)
-		opts := fmt.Sprintf("lowerdir=%s,upperdir=/overlay/upper,workdir=/overlay/work", rootMount)
-		if syscall.Mount("overlay", overlayMount, "overlay", 0, opts) == nil {
-			fmt.Printf("[init] overlayfs mounted on %s (lower=%s)\n", overlayMount, rootMount)
-			rootMount = overlayMount
-		} else {
-			fmt.Fprintf(os.Stderr, "[init] overlay mount failed, using ro EROFS directly\n")
-		}
-	} else {
-		fmt.Fprintf(os.Stderr, "[init] tmpfs for overlay failed, using ro EROFS\n")
-	}
-
-	// Read deployment WAL from the mounted rootfs.
-	deployPath = rootMount + "/boot/rootfs/deployment.json"
-	backupPath = rootMount + "/boot/rootfs/deployment.json.bak"
-	d, err := readDeployment()
+	d, err := readDeployment(sysMount+"/boot/rootfs/deployment.json",
+		sysMount+"/boot/rootfs/deployment.json.bak")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[init] failed to read deployment: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[init] deployment.json: %v\n", err)
 	} else {
 		fmt.Printf("[init] current=%s pending=%s boot_attempts=%d/%d\n",
-			d.RootFS.Current, d.RootFS.Pending,
-			d.RootFS.BootAttempts, d.RootFS.MaxAttempts)
-
+			d.RootFS.Current, d.RootFS.Pending, d.RootFS.BootAttempts, d.RootFS.MaxAttempts)
 		if d.RootFS.Pending != "" {
-			fmt.Println("[init] pending update found (PoC: skipping atomic switch)")
-		}
-		if d.RootFS.BootAttempts >= d.RootFS.MaxAttempts && d.RootFS.Rollback != "" {
-			fmt.Println("[init] rollback would be triggered here")
+			fmt.Println("[init] pending update present (PoC: atomic switch not yet applied)")
 		}
 	}
 
-	// Bind mount /var/home to /home.
+	verityDev := setupVerity(sysMount)
+	if verityDev == "" {
+		fmt.Fprintf(os.Stderr, "[init] could not prepare rootfs image\n")
+		dropToShell()
+		return
+	}
+
+	rootMount := "/newroot"
+	os.MkdirAll(rootMount, 0755)
+	if syscall.Mount(verityDev, rootMount, "erofs", syscall.MS_RDONLY, "") != nil {
+		fmt.Fprintf(os.Stderr, "[init] mounting EROFS root failed\n")
+		dropToShell()
+		return
+	}
+	fmt.Printf("[init] mounted verified EROFS root on %s\n", rootMount)
+
+	if mountVar(rootMount) {
+		os.MkdirAll(rootMount+"/var/etc-upper", 0755)
+		os.MkdirAll(rootMount+"/var/etc-work", 0755)
+		etcOpts := fmt.Sprintf("lowerdir=%s/etc,upperdir=%s/var/etc-upper,workdir=%s/var/etc-work",
+			rootMount, rootMount, rootMount)
+		if syscall.Mount("overlay", rootMount+"/etc", "overlay", 0, etcOpts) == nil {
+			fmt.Println("[init] persistent overlay mounted on /etc (upper in /var)")
+		} else {
+			fmt.Fprintf(os.Stderr, "[init] /etc overlay failed (continuing with ro /etc)\n")
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "[init] no persistent /var found, falling back to tmpfs /var\n")
+		syscall.Mount("tmpfs", rootMount+"/var", "tmpfs", 0, "mode=0755")
+	}
+
+	if syscall.Mount("tmpfs", rootMount+"/tmp", "tmpfs", 0, "mode=1777") == nil {
+		fmt.Println("[init] tmpfs mounted on /tmp")
+	}
+
 	os.MkdirAll(rootMount+"/var/home", 0755)
-	os.MkdirAll(rootMount+"/home", 0755)
 	if syscall.Mount(rootMount+"/var/home", rootMount+"/home", "", syscall.MS_BIND, "") != nil {
 		fmt.Fprintf(os.Stderr, "[init] bind mount /home failed\n")
 	} else {
 		fmt.Println("[init] bind mounted /var/home to /home")
 	}
 
-	// Move virtual fs into newroot.
 	for _, m := range []string{"/dev", "/proc", "/sys"} {
 		target := rootMount + m
 		os.MkdirAll(target, 0755)
@@ -347,9 +333,7 @@ func main() {
 	}
 	os.Chdir("/")
 
-	// Look for init in order of preference.
-	candidates := []string{"/usr/bin/runit-init", "/sbin/init", "/bin/init", "/etc/init", "/linuxrc"}
-	for _, init := range candidates {
+	for _, init := range []string{"/sbin/init", "/usr/lib/systemd/systemd", "/lib/systemd/systemd", "/bin/init"} {
 		if fi, err := os.Stat(init); err == nil && !fi.IsDir() {
 			fmt.Printf("[init] executing %s\n", init)
 			syscall.Exec(init, []string{init}, os.Environ())

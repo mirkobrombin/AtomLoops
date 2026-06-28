@@ -19,12 +19,12 @@ The full chain from firmware to login prompt, with cryptographic verification at
    - Sets up a loop device for the embedded hash tree (`losetup -r /dev/loop0 /boot/rootfs/rootfs-v1.hash`)
    - Activates dm-verity: `veritysetup open /dev/vdb atom-verity /dev/loop0 <root_hash>`
    - Mounts the verified device as EROFS read-only
-   - Creates an overlayfs (tmpfs upper/work) on top for writable paths
+   - Looks for a persistent `/var` partition (marked with `.atom-var`); when found, assembles "Model A": persistent `/var`, an `/etc` overlay whose upper lives in `/var`, a `/home` bind of `/var/home`, and a tmpfs `/tmp`. With no such partition it falls back to an ephemeral tmpfs `/var`.
    - Reads `deployment.json` from the mounted rootfs (WAL state)
    - Moves `/dev`, `/proc`, `/sys` into the new root
    - `switch_root` -> `/sbin/init`
 4. **dm-verity** verifies every 4KB block read from the rootfs against the SHA256 hash tree. The root hash is in the UKI cmdline, which is part of the signed PE binary. Tamper with any single byte of the rootfs and the kernel rejects it.
-5. **EROFS** is inherently read-only. The overlayfs provides `/etc`, `/var`, `/tmp` etc. as writable overlay in RAM. Power off and the overlay is gone the base system is always clean.
+5. **EROFS** is inherently read-only. The base system is never modified in place; it is replaced wholesale on update. Writable state lives outside the verified root: `/var` (and `/home`, bound to `/var/home`) is persistent on its own partition, `/etc` is a thin overlay whose changes are stored in `/var`, and only `/tmp` is RAM-backed. Without a persistent partition the whole writable layer falls back to tmpfs and is clean on every boot.
 
 The root hash never touches untrusted storage. It is embedded in the UKI, which is a PE binary that can be signed with Secure Boot Authenticode. This makes the entire rootfs integrity chain: firmware -> UKI signature -> cmdline root hash>  dm-verity -> EROFS blocks.
 
@@ -41,7 +41,7 @@ bash scripts/build/fetch-release.sh
 bash scripts/test/qemu-terminal.sh
 ```
 
-You should see the boot chain end with `Singularity OS` and a login prompt on ttyS0.
+You should see the boot chain end with `Sinty OS` and a login prompt on ttyS0.
 
 Then test with QEMU (1GB RAM, OVMF, KVM):
 
