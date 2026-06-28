@@ -195,5 +195,5 @@ func report(msg string, err error) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: atomd <boot-success|status|deploy <ver>|rollback|version> [--wal PATH] [--health-dir DIR]")
+	fmt.Fprintln(os.Stderr, "usage: atomd <init|run|recover|stage|boot-success|status|deploy|rollback|version> [flags]")
 }
