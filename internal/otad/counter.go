@@ -3,6 +3,7 @@ package otad
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -51,4 +52,49 @@ func (f FileCounter) Advance(to uint64) error {
 		return err
 	}
 	return os.Rename(tmp, f.Path)
+}
+
+// CommandCounter is a CounterStore backed by external shell commands, so the real
+// hardware counter (a TPM2 NV counter via tpm2-tools, or an RPMB helper) is
+// configured by the operator rather than hardcoded into the daemon. This is how
+// L4/L5 slot in behind the interface without the daemon depending on TPM/RPMB
+// libraries.
+//
+// ReadCmd must print the current counter value as a decimal integer on stdout.
+// AdvanceCmd is run with the target value in the ATOM_COUNTER environment
+// variable and is responsible for moving the hardware counter up to at least that
+// value (e.g. a wrapper that calls tpm2_nvincrement until it reaches ATOM_COUNTER).
+// Both run via "sh -c".
+type CommandCounter struct {
+	ReadCmd    string
+	AdvanceCmd string
+}
+
+func (c CommandCounter) Read() (uint64, error) {
+	out, err := exec.Command("sh", "-c", c.ReadCmd).Output()
+	if err != nil {
+		return 0, fmt.Errorf("counter read: %w", err)
+	}
+	s := strings.TrimSpace(string(out))
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("counter read: bad value %q: %w", s, err)
+	}
+	return n, nil
+}
+
+func (c CommandCounter) Advance(to uint64) error {
+	cur, err := c.Read()
+	if err != nil {
+		return err
+	}
+	if to <= cur {
+		return nil // monotonic: never regress
+	}
+	cmd := exec.Command("sh", "-c", c.AdvanceCmd)
+	cmd.Env = append(os.Environ(), fmt.Sprintf("ATOM_COUNTER=%d", to))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("counter advance to %d: %w: %s", to, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

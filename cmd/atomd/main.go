@@ -26,11 +26,21 @@ import (
 // the current boot (greenboot) at startup, then, if a manifest is configured, checks
 // for updates on a schedule (go-foundation's scheduler) and stages any it verifies.
 // Blocks until SIGTERM/SIGINT.
-func runDaemon(wal, healthDir, counterPath, manifestURL, pubkeyPath, cron string, dirs otad.StageDirs) int {
+// pickCounter selects the anti-rollback backend: the command-driven hardware
+// counter (TPM2/RPMB) when both shell commands are given, otherwise the software
+// file counter.
+func pickCounter(filePath, readCmd, advanceCmd string) otad.CounterStore {
+	if readCmd != "" && advanceCmd != "" {
+		return otad.CommandCounter{ReadCmd: readCmd, AdvanceCmd: advanceCmd}
+	}
+	return otad.FileCounter{Path: filePath}
+}
+
+func runDaemon(wal, healthDir string, store otad.CounterStore, manifestURL, pubkeyPath, cron string, dirs otad.StageDirs) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	if msg, err := otad.BootSuccess(wal, healthDir, otad.FileCounter{Path: counterPath}); err != nil {
+	if msg, err := otad.BootSuccess(wal, healthDir, store); err != nil {
 		fmt.Fprintln(os.Stderr, "atomd: boot-success:", err)
 	} else {
 		fmt.Println(msg)
@@ -101,12 +111,14 @@ func run(args []string) int {
 		pubkeyPath := fs.String("pubkey", "/etc/atom/root.pub", "root public key file")
 		cron := fs.String("cron", "0 * * * *", "update-check cron (default hourly)")
 		counter := fs.String("counter", defaultCounter, "anti-rollback counter file")
+		counterRead := fs.String("counter-read", "", "shell command printing the hardware counter (TPM2/RPMB); overrides --counter")
+		counterAdvance := fs.String("counter-advance", "", "shell command to advance the hardware counter (ATOM_COUNTER=target)")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "where rootfs-next lands")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "where kernelcache-next lands")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
-		return runDaemon(*wal, *hd, *counter, *manifest, *pubkeyPath, *cron,
+		return runDaemon(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), *manifest, *pubkeyPath, *cron,
 			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir})
 	case "recover":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
@@ -147,10 +159,12 @@ func run(args []string) int {
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
 		hd := fs.String("health-dir", defaultHealthDir, "directory of health-check executables")
 		counter := fs.String("counter", defaultCounter, "anti-rollback counter file")
+		counterRead := fs.String("counter-read", "", "shell command printing the hardware counter (TPM2/RPMB); overrides --counter")
+		counterAdvance := fs.String("counter-advance", "", "shell command to advance the hardware counter (ATOM_COUNTER=target)")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
-		return report(otad.BootSuccess(*wal, *hd, otad.FileCounter{Path: *counter}))
+		return report(otad.BootSuccess(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance)))
 	case "status":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")

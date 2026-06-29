@@ -47,3 +47,29 @@ func TestBootSuccessArmsCounter(t *testing.T) {
 		t.Errorf("anti-rollback counter = %d, want 2 after promotion", v)
 	}
 }
+
+func TestCommandCounter(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	f := filepath.Join(t.TempDir(), "hwcount")
+	os.WriteFile(f, []byte("0"), 0o644)
+	c := CommandCounter{ReadCmd: "cat " + f, AdvanceCmd: "echo $ATOM_COUNTER > " + f}
+
+	if v, err := c.Read(); err != nil || v != 0 {
+		t.Fatalf("read = %d, %v", v, err)
+	}
+	if err := c.Advance(5); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := c.Read(); v != 5 {
+		t.Fatalf("after advance = %d, want 5", v)
+	}
+	// Regress attempt is a no-op (monotonic), and does not run AdvanceCmd.
+	if err := c.Advance(3); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := c.Read(); v != 5 {
+		t.Errorf("counter regressed to %d", v)
+	}
+}
