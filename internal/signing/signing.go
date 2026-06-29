@@ -7,9 +7,60 @@ package signing
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+
+	"github.com/mirkobrombin/atomloops/internal/otad"
 )
+
+// hashFile streams a file and returns its SHA256 as lowercase hex.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// BuildManifest computes the SHA256 of the rootfs and kernelcache artifacts and
+// writes a manifest.json (indented) describing the update. minVersion is the
+// anti-rollback floor the update declares. Returns the path written. Sign the
+// result with SignManifest before publishing.
+func BuildManifest(outPath, version, minVersion, rootfsFile, rootfsURL, kcFile, kcURL string) (string, error) {
+	rh, err := hashFile(rootfsFile)
+	if err != nil {
+		return "", fmt.Errorf("hash rootfs: %w", err)
+	}
+	kh, err := hashFile(kcFile)
+	if err != nil {
+		return "", fmt.Errorf("hash kernelcache: %w", err)
+	}
+	m := otad.Manifest{
+		Version:         version,
+		MinVersion:      minVersion,
+		RootFSURL:       rootfsURL,
+		RootFSHash:      rh,
+		KernelcacheURL:  kcURL,
+		KernelcacheHash: kh,
+	}
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(outPath, b, 0o644); err != nil {
+		return "", err
+	}
+	return outPath, nil
+}
 
 // GenerateKeyFiles writes a fresh Ed25519 keypair: privPath gets the 64-byte
 // private key (mode 0600), pubPath gets the 32-byte public key, which is the raw

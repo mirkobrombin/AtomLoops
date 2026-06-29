@@ -51,3 +51,31 @@ func TestSignRejectsBadKey(t *testing.T) {
 		t.Error("expected error on malformed private key")
 	}
 }
+
+func TestBuildManifestRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	rootfs := filepath.Join(dir, "rootfs.erofs")
+	kc := filepath.Join(dir, "kc.efi")
+	os.WriteFile(rootfs, []byte("EROFS bytes v2"), 0o644)
+	os.WriteFile(kc, []byte("UKI bytes v2"), 0o644)
+
+	out := filepath.Join(dir, "manifest.json")
+	if _, err := BuildManifest(out, "v2", "v1", rootfs, "https://x/rootfs", kc, "https://x/kc"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(out)
+	m, err := otad.ParseManifest(b)
+	if err != nil {
+		t.Fatalf("generated manifest does not parse: %v", err)
+	}
+	if m.Version != "v2" || m.MinVersion != "v1" {
+		t.Errorf("versions wrong: %+v", m)
+	}
+	// The recorded hashes must match what the daemon's own verifier computes.
+	if err := otad.VerifySHA256(rootfs, m.RootFSHash); err != nil {
+		t.Errorf("rootfs hash mismatch: %v", err)
+	}
+	if err := otad.VerifySHA256(kc, m.KernelcacheHash); err != nil {
+		t.Errorf("kernelcache hash mismatch: %v", err)
+	}
+}
