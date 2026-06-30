@@ -6,3 +6,6 @@ out/
 *.tar.gz
 *.cpio.gz
 *.raw
+# private signing keys must never be committed
+*.key
+root.key

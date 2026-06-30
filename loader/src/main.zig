@@ -15,7 +15,14 @@ const cc = uefi.cc;
 // loader refuses to chain any kernelcache whose Ed25519 signature does not verify
 // against this key -- the security floor that holds even without firmware Secure
 // Boot (required for aarch64 / no-SB targets).
-const root_pubkey = [32]u8{ 0x93, 0x45, 0xd8, 0x5d, 0x98, 0x4e, 0x41, 0x6a, 0xc1, 0x65, 0x9e, 0x6c, 0xcb, 0x6a, 0x01, 0xb5, 0x6c, 0x4b, 0x85, 0xbd, 0x13, 0xe6, 0x48, 0xa2, 0x47, 0x5a, 0x37, 0x95, 0xa1, 0x66, 0x91, 0xfd };
+// The root public key is embedded at build time from src/root.pub: 32 raw bytes,
+// the SAME key the OTA daemon verifies manifests against, so the loader and the
+// daemon share one root of trust. Production: replace src/root.pub with the real
+// key (atom-sign keygen --pub loader/src/root.pub) and rebuild; no source edit.
+const root_pubkey: [32]u8 = @embedFile("root.pub")[0..32].*;
+comptime {
+    if (@embedFile("root.pub").len < 32) @compileError("loader/src/root.pub must be a 32-byte raw Ed25519 public key (run: atom-sign keygen --pub loader/src/root.pub)");
+}
 
 fn puts(s: []const u8) void {
     const con_out = uefi.system_table.con_out orelse return;
