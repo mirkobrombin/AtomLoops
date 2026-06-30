@@ -9,14 +9,31 @@
 package recovery
 
 import (
+	"github.com/mirkobrombin/atomloops/internal/audit"
 	"github.com/mirkobrombin/atomloops/internal/deployment"
 	"github.com/mirkobrombin/atomloops/internal/otad"
 	"github.com/mirkobrombin/go-foundation/pkg/srv"
 )
 
-// New builds the recovery HTTP server bound to the given WAL path.
-func New(walPath string) *srv.Server {
+// New builds the recovery HTTP server bound to the given WAL path. auditPath is
+// the update-history log surfaced at GET /history (empty disables it).
+func New(walPath, auditPath string) *srv.Server {
 	s := srv.New()
+
+	// GET /history -- the append-only update history, for the operator.
+	s.MapGet("/history", func(c *srv.Context) error {
+		if auditPath == "" {
+			return c.JSON(200, []audit.Event{})
+		}
+		events, err := audit.Read(auditPath)
+		if err != nil {
+			return c.JSON(500, map[string]string{"error": err.Error()})
+		}
+		if events == nil {
+			events = []audit.Event{}
+		}
+		return c.JSON(200, events)
+	})
 
 	// GET /status -- the current deployment state, for the operator/UART.
 	s.MapGet("/status", func(c *srv.Context) error {

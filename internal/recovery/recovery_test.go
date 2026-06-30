@@ -24,7 +24,7 @@ func walWithCandidate(t *testing.T) string {
 }
 
 func TestRecoveryStatus(t *testing.T) {
-	s := New(walWithCandidate(t))
+	s := New(walWithCandidate(t), "")
 	req := httptest.NewRequest("GET", "/status", nil)
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)
@@ -40,7 +40,7 @@ func TestRecoveryStatus(t *testing.T) {
 
 func TestRecoveryRollback(t *testing.T) {
 	wal := walWithCandidate(t)
-	s := New(wal)
+	s := New(wal, "")
 	req := httptest.NewRequest("POST", "/rollback", nil)
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, req)

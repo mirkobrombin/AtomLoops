@@ -16,7 +16,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/mirkobrombin/atomloops/internal/audit"
 	"github.com/mirkobrombin/atomloops/internal/otad"
 	"github.com/mirkobrombin/atomloops/internal/recovery"
 	"github.com/mirkobrombin/go-foundation/pkg/scheduler"
@@ -36,7 +38,7 @@ func pickCounter(filePath, readCmd, advanceCmd string) otad.CounterStore {
 	return otad.FileCounter{Path: filePath}
 }
 
-func runDaemon(wal, healthDir string, store otad.CounterStore, manifestURL, pubkeyPath, cron string, dirs otad.StageDirs) int {
+func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manifestURL, pubkeyPath, cron string, dirs otad.StageDirs) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -44,6 +46,7 @@ func runDaemon(wal, healthDir string, store otad.CounterStore, manifestURL, pubk
 		fmt.Fprintln(os.Stderr, "atomd: boot-success:", err)
 	} else {
 		fmt.Println(msg)
+		audit.Append(auditPath, "boot-success", msg, time.Now)
 	}
 
 	sched := scheduler.New(scheduler.WithLogger(func(m string) { fmt.Println("atomd:", m) }))
@@ -60,6 +63,7 @@ func runDaemon(wal, healthDir string, store otad.CounterStore, manifestURL, pubk
 				msg, err := otad.Stage(ctx, wal, manifestURL, pubkey, dirs)
 				if err == nil {
 					fmt.Println("atomd:", msg)
+					audit.Append(auditPath, "stage", msg, time.Now)
 				}
 				return err
 			},
@@ -77,6 +81,7 @@ func runDaemon(wal, healthDir string, store otad.CounterStore, manifestURL, pubk
 const defaultWAL = "/boot/rootfs/deployment.json"
 const defaultHealthDir = "/etc/atom/health.d"
 const defaultCounter = "/var/lib/atom/anti-rollback"
+const defaultAudit = "/var/log/atom/history.jsonl"
 
 var version = "dev"
 
@@ -113,22 +118,24 @@ func run(args []string) int {
 		counter := fs.String("counter", defaultCounter, "anti-rollback counter file")
 		counterRead := fs.String("counter-read", "", "shell command printing the hardware counter (TPM2/RPMB); overrides --counter")
 		counterAdvance := fs.String("counter-advance", "", "shell command to advance the hardware counter (ATOM_COUNTER=target)")
+		auditPath := fs.String("audit", defaultAudit, "update-history log")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "where rootfs-next lands")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "where kernelcache-next lands")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
-		return runDaemon(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), *manifest, *pubkeyPath, *cron,
+		return runDaemon(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), *auditPath, *manifest, *pubkeyPath, *cron,
 			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir})
 	case "recover":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
 		addr := fs.String("addr", ":7654", "recovery HTTP listen address")
+		auditPath := fs.String("audit", defaultAudit, "update-history log for /history")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
 		fmt.Printf("atomd: recovery API on %s\n", *addr)
-		if err := recovery.New(*wal).ListenAndServe(*addr); err != nil {
+		if err := recovery.New(*wal, *auditPath).ListenAndServe(*addr); err != nil {
 			fmt.Fprintln(os.Stderr, "atomd:", err)
 			return 1
 		}
