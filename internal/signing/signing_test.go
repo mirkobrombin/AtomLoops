@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mirkobrombin/atomloops/internal/otad"
+	"github.com/mirkobrombin/atomloops/internal/trust"
 )
 
 // TestSignThenVerify proves the release tool and the device trust check agree: a
@@ -77,5 +79,75 @@ func TestBuildManifestRoundTrip(t *testing.T) {
 	}
 	if err := otad.VerifySHA256(kc, m.KernelcacheHash); err != nil {
 		t.Errorf("kernelcache hash mismatch: %v", err)
+	}
+}
+
+func TestTwoTierTrustChain(t *testing.T) {
+	dir := t.TempDir()
+	rootPriv := filepath.Join(dir, "root.key")
+	rootPub := filepath.Join(dir, "root.pub")
+	if err := GenerateKeyFiles(rootPriv, rootPub); err != nil {
+		t.Fatal(err)
+	}
+	rootPubB, _ := os.ReadFile(rootPub)
+
+	// Root issues a signing cert (v3) + the operational signing key.
+	cert := filepath.Join(dir, "signing-cert-v3.json")
+	signKey := filepath.Join(dir, "signing-v3.key")
+	issued := time.Unix(1_000_000, 0)
+	if err := IssueCert(rootPriv, cert, signKey, 3, 365*24*time.Hour, issued); err != nil {
+		t.Fatal(err)
+	}
+
+	// A manifest signed by the SIGNING key (not root).
+	man := filepath.Join(dir, "manifest.json")
+	os.WriteFile(man, []byte(`{"version":"v2"}`), 0o644)
+	if _, err := SignManifest(signKey, man); err != nil {
+		t.Fatal(err)
+	}
+
+	// Chain: cert verifies vs root -> signing pubkey; manifest verifies vs it.
+	certB, _ := os.ReadFile(cert)
+	certSig, _ := os.ReadFile(cert + ".sig")
+	signingPub, ver, err := trust.VerifyCert(certB, certSig, rootPubB, issued.Add(24*time.Hour))
+	if err != nil || ver != 3 {
+		t.Fatalf("VerifyCert: ver=%d err=%v", ver, err)
+	}
+	manB, _ := os.ReadFile(man)
+	manSig, _ := os.ReadFile(man + ".sig")
+	if !trust.Verify(manB, manSig, signingPub) {
+		t.Fatal("manifest not verified by the signing key from the cert")
+	}
+
+	// Expired cert is refused.
+	if _, _, err := trust.VerifyCert(certB, certSig, rootPubB, issued.Add(400*24*time.Hour)); err == nil {
+		t.Error("expired cert accepted")
+	}
+	// Tampered cert fails the root check.
+	bad := append([]byte(nil), certB...)
+	bad[10] ^= 0xFF
+	if _, _, err := trust.VerifyCert(bad, certSig, rootPubB, issued.Add(24*time.Hour)); err == nil {
+		t.Error("tampered cert accepted")
+	}
+
+	// Revocation: min v4 shuts out v3, passes v4.
+	rev := filepath.Join(dir, "revocation.json")
+	if err := Revoke(rootPriv, rev, 4, nil, issued); err != nil {
+		t.Fatal(err)
+	}
+	revB, _ := os.ReadFile(rev)
+	revSig, _ := os.ReadFile(rev + ".sig")
+	if err := trust.CheckRevocation(revB, revSig, rootPubB, 3); err == nil {
+		t.Error("v3 should be revoked (below min v4)")
+	}
+	if err := trust.CheckRevocation(revB, revSig, rootPubB, 4); err != nil {
+		t.Errorf("v4 should pass: %v", err)
+	}
+	// Explicit revoke of v5.
+	Revoke(rootPriv, rev, 1, []int{5}, issued)
+	revB, _ = os.ReadFile(rev)
+	revSig, _ = os.ReadFile(rev + ".sig")
+	if err := trust.CheckRevocation(revB, revSig, rootPubB, 5); err == nil {
+		t.Error("v5 explicitly revoked should fail")
 	}
 }

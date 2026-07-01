@@ -8,14 +8,78 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/mirkobrombin/atomloops/internal/otad"
+	"github.com/mirkobrombin/atomloops/internal/trust"
 )
+
+// IssueCert generates a fresh operational signing keypair, writes its private key
+// to signingKeyPath, and writes a root-signed certificate (signing-cert-vN.json +
+// .sig) vouching for the signing public key. The bytes signed are exactly the
+// bytes written, so the daemon/loader verify what they read.
+func IssueCert(rootPrivPath, certPath, signingKeyPath string, version int, validity time.Duration, now time.Time) error {
+	root, err := os.ReadFile(rootPrivPath)
+	if err != nil {
+		return err
+	}
+	if len(root) != ed25519.PrivateKeySize {
+		return fmt.Errorf("issue-cert: root key must be %d bytes, got %d", ed25519.PrivateKeySize, len(root))
+	}
+	spub, spriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return err
+	}
+	cert := trust.SigningCert{
+		Version:       version,
+		SigningPubkey: base64.StdEncoding.EncodeToString(spub),
+		IssuedAt:      now.UTC().Format(time.RFC3339),
+		NotAfter:      now.Add(validity).UTC().Format(time.RFC3339),
+	}
+	certBytes, err := json.Marshal(cert)
+	if err != nil {
+		return err
+	}
+	sig := ed25519.Sign(ed25519.PrivateKey(root), certBytes)
+	if err := os.WriteFile(certPath, certBytes, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(certPath+".sig", sig, 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(signingKeyPath, spriv, 0o600)
+}
+
+// Revoke writes a root-signed revocation list (revocation/latest.json + .sig): any
+// signing cert below minVersion, or listed in revoked, is refused by the daemon.
+func Revoke(rootPrivPath, outPath string, minVersion int, revoked []int, now time.Time) error {
+	root, err := os.ReadFile(rootPrivPath)
+	if err != nil {
+		return err
+	}
+	if len(root) != ed25519.PrivateKeySize {
+		return fmt.Errorf("revoke: root key must be %d bytes, got %d", ed25519.PrivateKeySize, len(root))
+	}
+	if revoked == nil {
+		revoked = []int{}
+	}
+	rev := trust.Revocation{MinCertVersion: minVersion, Revoked: revoked, UpdatedAt: now.UTC().Format(time.RFC3339)}
+	b, err := json.Marshal(rev)
+	if err != nil {
+		return err
+	}
+	sig := ed25519.Sign(ed25519.PrivateKey(root), b)
+	if err := os.WriteFile(outPath, b, 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(outPath+".sig", sig, 0o644)
+}
 
 // hashFile streams a file and returns its SHA256 as lowercase hex.
 func hashFile(path string) (string, error) {
