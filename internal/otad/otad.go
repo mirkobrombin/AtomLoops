@@ -40,12 +40,13 @@ func Init(walPath, deviceID, rootfsVersion string) (string, error) {
 // reaches stable_threshold). With no candidate in flight it is a no-op. A failed
 // health gate leaves the WAL untouched, so boot_attempts continues to drain and
 // the initramfs will roll the candidate back on a later boot.
-func BootSuccess(walPath, healthDir string, store CounterStore) (string, error) {
+func BootSuccess(walPath, healthDir string, store CounterStore, dirs StageDirs) (string, error) {
 	d, err := deployment.Load(walPath)
 	if err != nil {
 		return "", err
 	}
 	if !d.HasPending() {
+		_ = SyncBootState(walPath, dirs) // keep the ESP pointing at -active when stable
 		return "stable: no candidate in flight, nothing to confirm", nil
 	}
 	if err := RunHealthChecks(healthDir); err != nil {
@@ -57,6 +58,10 @@ func BootSuccess(walPath, healthDir string, store CounterStore) (string, error) 
 		return "", err
 	}
 	if promoted {
+		// Canonicalize the on-disk slots: -next becomes -active, old -active -> -prev.
+		if err := PromoteSlots(dirs); err != nil {
+			return "", fmt.Errorf("promoted %s but slot rename failed: %w", cand, err)
+		}
 		// Arm the monotonic anti-rollback counter only now, after the candidate has
 		// stabilized (A4.2), so a faulty update never advances the floor.
 		if store != nil {
@@ -64,9 +69,11 @@ func BootSuccess(walPath, healthDir string, store CounterStore) (string, error) 
 				return "", fmt.Errorf("promoted %s but arming anti-rollback counter failed: %w", cand, err)
 			}
 		}
+		_ = SyncBootState(walPath, dirs) // now no pending -> boot -active
 		return fmt.Sprintf("candidate %s promoted to last_known_good (anti-rollback counter %d)",
 			cand, d.AntiRollback.CounterValue), nil
 	}
+	_ = SyncBootState(walPath, dirs) // still pending -> refresh -next attempts
 	return fmt.Sprintf("good boot recorded for candidate %s (%d/%d stable)",
 		cand, d.Kernelcache.StableBoots, d.Kernelcache.StableThreshold), nil
 }
@@ -122,7 +129,7 @@ func Deploy(walPath, version string) (string, error) {
 }
 
 // Rollback abandons any candidate and returns to last_known_good.
-func Rollback(walPath string) (string, error) {
+func Rollback(walPath string, dirs StageDirs) (string, error) {
 	d, err := deployment.Load(walPath)
 	if err != nil {
 		return "", err
@@ -131,6 +138,7 @@ func Rollback(walPath string) (string, error) {
 	if err := d.Save(walPath); err != nil {
 		return "", err
 	}
+	_ = SyncBootState(walPath, dirs) // no pending candidate -> boot -active
 	return fmt.Sprintf("rolled back to %s", d.RootFS.Current), nil
 }
 

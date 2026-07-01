@@ -81,7 +81,7 @@ func TestReleaseToPromoteEndToEnd(t *testing.T) {
 	health := filepath.Join(dir, "no-health-dir") // absent = healthy
 	var lastMsg string
 	for i := 0; i < 3; i++ {
-		msg, err := otad.BootSuccess(wal, health, counter)
+		msg, err := otad.BootSuccess(wal, health, counter, dirs)
 		if err != nil {
 			t.Fatal(err)
 		}

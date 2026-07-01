@@ -38,7 +38,7 @@ func TestBootSuccessArmsCounter(t *testing.T) {
 	cnt := FileCounter{Path: filepath.Join(t.TempDir(), "count")}
 	health := t.TempDir()
 	for i := 0; i < 3; i++ {
-		if _, err := BootSuccess(wal, health, cnt); err != nil {
+		if _, err := BootSuccess(wal, health, cnt, StageDirs{}); err != nil {
 			t.Fatal(err)
 		}
 	}

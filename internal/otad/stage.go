@@ -106,6 +106,10 @@ func Stage(ctx context.Context, walPath, manifestURL string, pubkey []byte, dirs
 	if err := d.Save(walPath); err != nil {
 		return "", err
 	}
+	// Arm the ESP boot-state so the loader boots the -next slot on the trial budget.
+	if err := SyncBootState(walPath, dirs); err != nil {
+		return "", fmt.Errorf("staged %s but arming boot-state failed: %w", m.Version, err)
+	}
 	return fmt.Sprintf("staged %s (rootfs + kernelcache fetched + verified); reboot to try it", m.Version), nil
 }
 

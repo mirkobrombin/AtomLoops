@@ -42,7 +42,7 @@ func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manife
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	if msg, err := otad.BootSuccess(wal, healthDir, store); err != nil {
+	if msg, err := otad.BootSuccess(wal, healthDir, store, dirs); err != nil {
 		fmt.Fprintln(os.Stderr, "atomd: boot-success:", err)
 	} else {
 		fmt.Println(msg)
@@ -131,11 +131,13 @@ func run(args []string) int {
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
 		addr := fs.String("addr", ":7654", "recovery HTTP listen address")
 		auditPath := fs.String("audit", defaultAudit, "update-history log for /history")
+		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot dir (for rollback boot-state)")
+		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP slot dir (for rollback boot-state)")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
 		fmt.Printf("atomd: recovery API on %s\n", *addr)
-		if err := recovery.New(*wal, *auditPath).ListenAndServe(*addr); err != nil {
+		if err := recovery.New(*wal, *auditPath, otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir}).ListenAndServe(*addr); err != nil {
 			fmt.Fprintln(os.Stderr, "atomd:", err)
 			return 1
 		}
@@ -168,10 +170,12 @@ func run(args []string) int {
 		counter := fs.String("counter", defaultCounter, "anti-rollback counter file")
 		counterRead := fs.String("counter-read", "", "shell command printing the hardware counter (TPM2/RPMB); overrides --counter")
 		counterAdvance := fs.String("counter-advance", "", "shell command to advance the hardware counter (ATOM_COUNTER=target)")
+		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot dir (for promote rename + boot-state)")
+		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP slot dir (for promote rename + boot-state)")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
-		return report(otad.BootSuccess(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance)))
+		return report(otad.BootSuccess(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir}))
 	case "status":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
@@ -193,10 +197,12 @@ func run(args []string) int {
 	case "rollback":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
+		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot dir (for boot-state)")
+		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP slot dir (for boot-state)")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
-		return report(otad.Rollback(*wal))
+		return report(otad.Rollback(*wal, otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir}))
 	case "version", "--version", "-v":
 		fmt.Printf("atomd %s\n", version)
 		return 0

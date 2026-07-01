@@ -17,7 +17,7 @@ import (
 
 // New builds the recovery HTTP server bound to the given WAL path. auditPath is
 // the update-history log surfaced at GET /history (empty disables it).
-func New(walPath, auditPath string) *srv.Server {
+func New(walPath, auditPath string, dirs otad.StageDirs) *srv.Server {
 	s := srv.New()
 
 	// GET /history -- the append-only update history, for the operator.
@@ -56,7 +56,7 @@ func New(walPath, auditPath string) *srv.Server {
 	// POST /rollback -- return to last_known_good with no network (its artifacts
 	// are already present). The guaranteed-safe recovery floor.
 	s.MapPost("/rollback", func(c *srv.Context) error {
-		msg, err := otad.Rollback(walPath)
+		msg, err := otad.Rollback(walPath, dirs)
 		if err != nil {
 			return c.JSON(500, map[string]string{"error": err.Error()})
 		}
