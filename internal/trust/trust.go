@@ -1,9 +1,6 @@
-// Package trust implements the two-level Atom Loops trust chain (doc A4.1): a cold
-// ROOT key signs short-lived SIGNING-key certificates and a revocation list; the
-// operational SIGNING key signs update manifests. The daemon and the loader both
-// verify against the same embedded root key, so the signing key can rotate without
-// touching either. JSON is flat by contract so the Zig loader can parse it without
-// a JSON library.
+// Package trust is the two-level key chain (A4.1): a cold ROOT key signs the
+// operational SIGNING key's cert and a revocation list; the SIGNING key signs
+// manifests. Flat JSON so the Zig loader parses it without a JSON lib.
 package trust
 
 import (
@@ -14,8 +11,7 @@ import (
 	"time"
 )
 
-// SigningCert conveys an operational signing public key, vouched for by the root
-// key via a detached signature over the cert bytes.
+// SigningCert: an operational signing key, vouched for by the root key.
 type SigningCert struct {
 	Version       int    `json:"version"`
 	SigningPubkey string `json:"signing_pubkey"` // base64 of the 32-byte Ed25519 key
@@ -23,15 +19,14 @@ type SigningCert struct {
 	NotAfter      string `json:"not_after"`      // RFC3339
 }
 
-// Revocation is the root-signed revocation list, checked before every update.
+// Revocation: the root-signed list checked before every update.
 type Revocation struct {
 	MinCertVersion int    `json:"min_cert_version"` // reject any cert version below this
 	Revoked        []int  `json:"revoked"`          // explicitly revoked cert versions
 	UpdatedAt      string `json:"updated_at"`       // RFC3339
 }
 
-// Verify reports whether sig is a valid Ed25519 signature over data by pub. It is
-// the one detached-signature primitive the whole chain uses.
+// Verify checks a detached Ed25519 signature. The one primitive the chain uses.
 func Verify(data, sig, pub []byte) bool {
 	if len(pub) != ed25519.PublicKeySize || len(sig) != ed25519.SignatureSize {
 		return false
@@ -39,9 +34,7 @@ func Verify(data, sig, pub []byte) bool {
 	return ed25519.Verify(ed25519.PublicKey(pub), data, sig)
 }
 
-// VerifyCert verifies a signing certificate against the root key and returns the
-// operational signing public key it vouches for. It fails if the root signature is
-// invalid, the cert is malformed, or the cert has expired (not_after < now).
+// VerifyCert checks the cert's root signature + expiry and returns the signing key.
 func VerifyCert(certBytes, certSig, rootPub []byte, now time.Time) (signingPub []byte, version int, err error) {
 	if !Verify(certBytes, certSig, rootPub) {
 		return nil, 0, fmt.Errorf("trust: signing cert not signed by the root key")
@@ -66,10 +59,8 @@ func VerifyCert(certBytes, certSig, rootPub []byte, now time.Time) (signingPub [
 	return pub, c.Version, nil
 }
 
-// CheckRevocation verifies the revocation list against the root key and reports an
-// error if certVersion is revoked or below the declared minimum. This runs FIRST
-// in every update cycle, so a compromised signing key is shut out without a rootfs
-// update.
+// CheckRevocation errors if certVersion is revoked or below the minimum. Runs first
+// each cycle so a compromised signing key is shut out without a rootfs update.
 func CheckRevocation(revBytes, revSig, rootPub []byte, certVersion int) error {
 	if !Verify(revBytes, revSig, rootPub) {
 		return fmt.Errorf("trust: revocation list not signed by the root key")

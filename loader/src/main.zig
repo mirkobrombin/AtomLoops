@@ -1,27 +1,15 @@
-// Atom Loops custom EFI loader (prototype). Go-explicit Zig: every fallible call
-// checked at the call site, no hidden control flow, no panics in normal paths.
-//   Phase 1-2: UEFI app + GOP frame-zero paint.
-//   Phase 3-4: LoadImage/StartImage chainload (framebuffer preserved).
-//   Phase 6: read ESP deployment.json + PickBootTarget slot select.
-//   Phase 7 (this file): Ed25519 self-verify the selected kernelcache before
-//            chaining it (std.crypto, no external deps). A bad signature is fatal
-//            for that slot. TPM measure + logo composite are later phases.
+// Atom Loops EFI loader: paint the boot surface, verify the selected kernelcache
+// against the root of trust, chainload it. Zero external deps.
 const std = @import("std");
 const uefi = std.os.uefi;
 const File = uefi.protocol.File;
 const cc = uefi.cc;
 
-// The Atom Loops root/signing public key, embedded at build time (A4.1). The
-// loader refuses to chain any kernelcache whose Ed25519 signature does not verify
-// against this key -- the security floor that holds even without firmware Secure
-// Boot (required for aarch64 / no-SB targets).
-// The root public key is embedded at build time from src/root.pub: 32 raw bytes,
-// the SAME key the OTA daemon verifies manifests against, so the loader and the
-// daemon share one root of trust. Production: replace src/root.pub with the real
-// key (atom-sign keygen --pub loader/src/root.pub) and rebuild; no source edit.
+// Root public key, embedded from src/root.pub (32 raw bytes), same key the daemon
+// uses. Swap the file + rebuild for production; no source edit.
 const root_pubkey: [32]u8 = @embedFile("root.pub")[0..32].*;
 comptime {
-    if (@embedFile("root.pub").len < 32) @compileError("loader/src/root.pub must be a 32-byte raw Ed25519 public key (run: atom-sign keygen --pub loader/src/root.pub)");
+    if (@embedFile("root.pub").len < 32) @compileError("loader/src/root.pub must be a 32-byte raw Ed25519 public key");
 }
 
 fn puts(s: []const u8) void {

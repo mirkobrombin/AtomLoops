@@ -20,10 +20,8 @@ import (
 	"github.com/mirkobrombin/atomloops/internal/trust"
 )
 
-// IssueCert generates a fresh operational signing keypair, writes its private key
-// to signingKeyPath, and writes a root-signed certificate (signing-cert-vN.json +
-// .sig) vouching for the signing public key. The bytes signed are exactly the
-// bytes written, so the daemon/loader verify what they read.
+// IssueCert generates a signing keypair and writes it + a root-signed cert
+// (signing-cert-vN.json + .sig). The signed bytes are exactly the written bytes.
 func IssueCert(rootPrivPath, certPath, signingKeyPath string, version int, validity time.Duration, now time.Time) error {
 	root, err := os.ReadFile(rootPrivPath)
 	if err != nil {
@@ -56,8 +54,7 @@ func IssueCert(rootPrivPath, certPath, signingKeyPath string, version int, valid
 	return os.WriteFile(signingKeyPath, spriv, 0o600)
 }
 
-// Revoke writes a root-signed revocation list (revocation/latest.json + .sig): any
-// signing cert below minVersion, or listed in revoked, is refused by the daemon.
+// Revoke writes a root-signed revocation list (+ .sig).
 func Revoke(rootPrivPath, outPath string, minVersion int, revoked []int, now time.Time) error {
 	root, err := os.ReadFile(rootPrivPath)
 	if err != nil {
