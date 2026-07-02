@@ -1,0 +1,115 @@
+name: Bug report
+description: Report something that is broken or behaves incorrectly
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please search existing issues to avoid duplicates.
+
+        Give the issue a **specific title**: say what is broken and where, for
+        example `Dock duplicates after leaving fullscreen`, not `the dock is broken`.
+
+        Low-effort reports with empty fields cannot be acted on and will be closed.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you saw versus what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component / area
+      options:
+        - Shell (panel, dock, overview, control center)
+        - An app
+        - Greeter / login
+        - Build / install
+        - Compositor / labwc
+        - Other / not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: session
+    attributes:
+      label: How are you running Singularity?
+      description: Most "nothing works" reports come from running the apps outside the Singularity session. Many features (screenshots, layer-shell surfaces, X11 apps) only work inside it.
+      options:
+        - Inside the Singularity session, logged in through the greeter
+        - Inside the Singularity session, started with singularity-labwc-session from a TTY
+        - Under another desktop (GNOME, KDE, ...)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution
+      placeholder: e.g. Arch, Fedora 44, Debian Sid, Vanilla OS 3 Reunion, Ubuntu 26.04
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Built from source
+        - OS image
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: system-components
+    attributes:
+      label: System components
+      description: |
+        Open **Settings > About** and press the **copy icon in the top-right** to copy
+        your component versions and licenses as Markdown, then paste it here. This tells
+        us exactly which compositor, toolkit and library versions you are running, which
+        is often the difference between a fix and a guess.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: |
+        Paste the session logs. They live in `~/.local/state/singularity/`:
+        `singularity-desktop.log` (shell), `session.log` (session launcher) and `polkit.log`, each
+        with a `.1` copy of the previous session. From a TTY: `cat ~/.local/state/singularity/desktop.log`.
+
+        These can contain window titles, file paths and network or account names, so
+        review them and redact anything you would rather not share. If you truly have
+        no logs, say so and explain why.
+      render: shell
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched the existing issues
+          required: true
+        - label: I have given a specific title and filled every field above
+          required: true

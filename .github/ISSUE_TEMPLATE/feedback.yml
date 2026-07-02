@@ -1,0 +1,25 @@
+name: Feedback
+description: Share an impression, an idea, or general feedback
+title: "[Feedback]: "
+labels: ["feedback"]
+body:
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Your feedback
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Shell (panel, dock, overview, control center)
+        - An app
+        - Greeter / login
+        - Build / install
+        - Compositor / labwc
+        - The website / docs
+        - Other / not sure
+    validations:
+      required: true
