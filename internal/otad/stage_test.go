@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -14,23 +15,36 @@ import (
 	"testing"
 
 	"github.com/mirkobrombin/atomloops/internal/deployment"
+	"github.com/mirkobrombin/atomloops/internal/trust"
 )
 
 func sha256hex(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
 
-// stageServer serves a signed manifest + the two artifacts. Returns the base URL,
-// the manifest signing pubkey, and a handle to break the signature.
-func stageServer(t *testing.T, tamperSig bool) (string, []byte) {
+// stageServer builds the full two-tier release: a root-signed signing cert, a
+// manifest signed by that signing key, and the two artifacts. Returns the base URL
+// and the ROOT public key the daemon embeds. tamperManifestSig breaks the manifest
+// signature to exercise rejection.
+func stageServer(t *testing.T, tamperManifestSig bool) (string, []byte) {
 	t.Helper()
 	rootfs := []byte("EROFS rootfs image v2 contents")
 	kernel := []byte("UKI kernelcache v2 contents")
 
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	rootPub, rootPriv, _ := ed25519.GenerateKey(rand.Reader)
+	signPub, signPriv, _ := ed25519.GenerateKey(rand.Reader)
+
+	// Root-signed signing cert (v1), valid for a year.
+	cert := trust.SigningCert{
+		Version:       1,
+		SigningPubkey: base64.StdEncoding.EncodeToString(signPub),
+		IssuedAt:      "2026-01-01T00:00:00Z",
+		NotAfter:      "2099-01-01T00:00:00Z",
+	}
+	certBytes, _ := json.Marshal(cert)
+	certSig := ed25519.Sign(rootPriv, certBytes)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rootfs", func(w http.ResponseWriter, r *http.Request) { w.Write(rootfs) })
 	mux.HandleFunc("/kernelcache", func(w http.ResponseWriter, r *http.Request) { w.Write(kernel) })
-
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -43,13 +57,16 @@ func stageServer(t *testing.T, tamperSig bool) (string, []byte) {
 		KernelcacheHash: sha256hex(kernel),
 	}
 	mData, _ := json.Marshal(m)
-	sig := ed25519.Sign(priv, mData)
-	if tamperSig {
-		sig[0] ^= 0xFF
+	mSig := ed25519.Sign(signPriv, mData) // signed by the SIGNING key
+	if tamperManifestSig {
+		mSig[0] ^= 0xFF
 	}
+
 	mux.HandleFunc("/manifest.json", func(w http.ResponseWriter, r *http.Request) { w.Write(mData) })
-	mux.HandleFunc("/manifest.json.sig", func(w http.ResponseWriter, r *http.Request) { w.Write(sig) })
-	return srv.URL, pub
+	mux.HandleFunc("/manifest.json.sig", func(w http.ResponseWriter, r *http.Request) { w.Write(mSig) })
+	mux.HandleFunc("/signing-cert.json", func(w http.ResponseWriter, r *http.Request) { w.Write(certBytes) })
+	mux.HandleFunc("/signing-cert.json.sig", func(w http.ResponseWriter, r *http.Request) { w.Write(certSig) })
+	return srv.URL, rootPub
 }
 
 func newWALFile(t *testing.T) string {
@@ -62,11 +79,11 @@ func newWALFile(t *testing.T) string {
 }
 
 func TestStageEndToEnd(t *testing.T) {
-	base, pub := stageServer(t, false)
+	base, rootPub := stageServer(t, false)
 	wal := newWALFile(t)
 	dirs := StageDirs{Rootfs: filepath.Join(t.TempDir(), "rootfs"), ESP: filepath.Join(t.TempDir(), "esp")}
 
-	msg, err := Stage(context.Background(), wal, base+"/manifest.json", pub, dirs)
+	msg, err := Stage(context.Background(), wal, base+"/manifest.json", "", rootPub, dirs)
 	if err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
@@ -80,32 +97,46 @@ func TestStageEndToEnd(t *testing.T) {
 	if d.RootFS.Pending != "v2" || d.RootFS.BootAttempts != 3 {
 		t.Fatalf("WAL not marked pending: %+v (%s)", d.RootFS, msg)
 	}
+	// The ESP boot-state was armed to boot -next.
+	bs, _ := ReadBootState(filepath.Join(dirs.ESP, "boot-state"))
+	if bs.Target != "next" || !bs.Trial {
+		t.Errorf("boot-state not armed: %+v", bs)
+	}
 }
 
 func TestStageRejectsBadSignature(t *testing.T) {
-	base, pub := stageServer(t, true) // tampered signature
+	base, rootPub := stageServer(t, true) // tampered manifest signature
 	wal := newWALFile(t)
 	dirs := StageDirs{Rootfs: filepath.Join(t.TempDir(), "rootfs"), ESP: filepath.Join(t.TempDir(), "esp")}
 
-	if _, err := Stage(context.Background(), wal, base+"/manifest.json", pub, dirs); err == nil {
+	if _, err := Stage(context.Background(), wal, base+"/manifest.json", "", rootPub, dirs); err == nil {
 		t.Fatal("Stage must reject a bad manifest signature")
 	}
-	// WAL untouched: no pending candidate from a rejected update.
 	d, _ := deployment.Load(wal)
 	if d.HasPending() {
 		t.Errorf("rejected update still marked the WAL pending: %+v", d.RootFS)
 	}
 }
 
+func TestStageRejectsWrongRoot(t *testing.T) {
+	base, _ := stageServer(t, false)
+	wal := newWALFile(t)
+	dirs := StageDirs{Rootfs: filepath.Join(t.TempDir(), "r"), ESP: filepath.Join(t.TempDir(), "e")}
+	// A different root key than the one that signed the cert: cert verify must fail.
+	otherPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	if _, err := Stage(context.Background(), wal, base+"/manifest.json", "", otherPub, dirs); err == nil {
+		t.Fatal("Stage must reject a cert not signed by the trusted root")
+	}
+}
+
 func TestStageRefusesDowngrade(t *testing.T) {
-	// Server offers v2, but the device is already on v5: anti-rollback must refuse.
-	base, pub := stageServer(t, false)
+	base, rootPub := stageServer(t, false)
 	wal := filepath.Join(t.TempDir(), "deployment.json")
 	if err := deployment.New("dev-1", "v5").Save(wal); err != nil {
 		t.Fatal(err)
 	}
 	dirs := StageDirs{Rootfs: filepath.Join(t.TempDir(), "r"), ESP: filepath.Join(t.TempDir(), "e")}
-	if _, err := Stage(context.Background(), wal, base+"/manifest.json", pub, dirs); err == nil {
+	if _, err := Stage(context.Background(), wal, base+"/manifest.json", "", rootPub, dirs); err == nil {
 		t.Fatal("Stage must refuse a downgrade (v2 < installed v5)")
 	}
 	d, _ := deployment.Load(wal)

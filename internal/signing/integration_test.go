@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mirkobrombin/atomloops/internal/deployment"
 	"github.com/mirkobrombin/atomloops/internal/otad"
@@ -44,23 +45,29 @@ func TestReleaseToPromoteEndToEnd(t *testing.T) {
 	if err := GenerateKeyFiles(priv, pub); err != nil {
 		t.Fatal(err)
 	}
+	// Root issues an operational signing cert; manifests are signed by it.
+	cert := filepath.Join(dir, "signing-cert.json")
+	signingKey := filepath.Join(dir, "signing.key")
+	if err := IssueCert(priv, cert, signingKey, 1, 365*24*time.Hour, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	manifest := filepath.Join(dir, "manifest.json")
 	if _, err := BuildManifest(manifest, "v2", "v1", rootfs, srv.URL+"/rootfs.bin", kc, srv.URL+"/kc.bin"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SignManifest(priv, manifest); err != nil { // writes manifest.json.sig
+	if _, err := SignManifest(signingKey, manifest); err != nil { // signed by the SIGNING key
 		t.Fatal(err)
 	}
 
 	// --- Device side ---
-	pubkey, _ := os.ReadFile(pub)
+	rootPub, _ := os.ReadFile(pub)
 	wal := filepath.Join(dir, "deployment.json")
 	if err := deployment.New("dev-int", "v1").Save(wal); err != nil {
 		t.Fatal(err)
 	}
 	dirs := otad.StageDirs{Rootfs: filepath.Join(dir, "slot-rootfs"), ESP: filepath.Join(dir, "slot-esp")}
 
-	if _, err := otad.Stage(context.Background(), wal, srv.URL+"/manifest.json", pubkey, dirs); err != nil {
+	if _, err := otad.Stage(context.Background(), wal, srv.URL+"/manifest.json", "", rootPub, dirs); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 	// Artifacts landed and the candidate is pending.
@@ -95,12 +102,5 @@ func TestReleaseToPromoteEndToEnd(t *testing.T) {
 	}
 	if v, _ := counter.Read(); v != 2 {
 		t.Errorf("anti-rollback counter = %d, want 2 (kernelcache version)", v)
-	}
-
-	// A downgrade offered afterwards must now be refused (installed v2).
-	if _, err := otad.Stage(context.Background(), wal, srv.URL+"/manifest.json", pubkey, dirs); err == nil {
-		// same v2 manifest is not a downgrade (v2 == current), so this should
-		// actually succeed as a re-stage; assert it does NOT error unexpectedly.
-		// (Downgrade refusal is covered by otad's own tests.)
 	}
 }

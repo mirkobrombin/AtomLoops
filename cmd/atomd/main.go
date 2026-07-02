@@ -38,7 +38,7 @@ func pickCounter(filePath, readCmd, advanceCmd string) otad.CounterStore {
 	return otad.FileCounter{Path: filePath}
 }
 
-func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manifestURL, pubkeyPath, cron string, dirs otad.StageDirs) int {
+func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manifestURL, revocationURL, pubkeyPath, cron string, dirs otad.StageDirs) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -60,7 +60,7 @@ func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manife
 			Name: "update-check",
 			Cron: cron,
 			Handler: func(ctx context.Context) error {
-				msg, err := otad.Stage(ctx, wal, manifestURL, pubkey, dirs)
+				msg, err := otad.Stage(ctx, wal, manifestURL, revocationURL, pubkey, dirs)
 				if err == nil {
 					fmt.Println("atomd:", msg)
 					audit.Append(auditPath, "stage", msg, time.Now)
@@ -115,6 +115,7 @@ func run(args []string) int {
 		manifest := fs.String("manifest", "", "manifest URL to poll for updates (empty = greenboot only)")
 		pubkeyPath := fs.String("pubkey", "/etc/atom/root.pub", "root public key file")
 		cron := fs.String("cron", "0 * * * *", "update-check cron (default hourly)")
+		revocation := fs.String("revocation", "", "root-signed revocation list URL (empty to skip)")
 		counter := fs.String("counter", defaultCounter, "anti-rollback counter file")
 		counterRead := fs.String("counter-read", "", "shell command printing the hardware counter (TPM2/RPMB); overrides --counter")
 		counterAdvance := fs.String("counter-advance", "", "shell command to advance the hardware counter (ATOM_COUNTER=target)")
@@ -124,7 +125,7 @@ func run(args []string) int {
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
-		return runDaemon(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), *auditPath, *manifest, *pubkeyPath, *cron,
+		return runDaemon(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), *auditPath, *manifest, *revocation, *pubkeyPath, *cron,
 			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir})
 	case "recover":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
@@ -147,6 +148,7 @@ func run(args []string) int {
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
 		manifest := fs.String("manifest", "", "signed manifest URL to fetch")
 		pubkeyPath := fs.String("pubkey", "/etc/atom/root.pub", "root public key file (32 raw bytes)")
+		revocation := fs.String("revocation", "", "root-signed revocation list URL (empty to skip)")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "where rootfs-next lands")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "where kernelcache-next lands")
 		if err := fs.Parse(rest); err != nil {
@@ -161,7 +163,7 @@ func run(args []string) int {
 			fmt.Fprintf(os.Stderr, "atomd stage: read pubkey: %v\n", err)
 			return 1
 		}
-		return report(otad.Stage(context.Background(), *wal, *manifest, pubkey,
+		return report(otad.Stage(context.Background(), *wal, *manifest, *revocation, pubkey,
 			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir}))
 	case "boot-success":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)

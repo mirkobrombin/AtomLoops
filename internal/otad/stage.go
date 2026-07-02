@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/mirkobrombin/atomloops/internal/deployment"
+	"github.com/mirkobrombin/atomloops/internal/trust"
 )
 
 // StageDirs is where staged artifacts land. rootfs images go on the /boot/rootfs
@@ -26,31 +29,67 @@ type StageDirs struct {
 // This is the service tier end to end: go-foundation httpx does the retrying
 // downloads, stdlib ed25519/sha256 do the trust checks, and the deployment WAL
 // (shared with the initramfs) records the transition.
-func Stage(ctx context.Context, walPath, manifestURL string, pubkey []byte, dirs StageDirs) (string, error) {
+// rootPub is the embedded ROOT public key. revocationURL is the root-signed
+// revocation list (empty to skip). The manifest is verified against the SIGNING
+// key vouched for by a root-signed cert fetched next to the manifest, and the
+// revocation list is checked FIRST, per the A4.1 trust chain.
+func Stage(ctx context.Context, walPath, manifestURL, revocationURL string, rootPub []byte, dirs StageDirs) (string, error) {
 	work, err := os.MkdirTemp("", "atomd-stage-*")
 	if err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(work)
 
+	fetch := func(url, name string) ([]byte, error) {
+		p := filepath.Join(work, name)
+		if _, err := FetchTo(ctx, url, p); err != nil {
+			return nil, err
+		}
+		return os.ReadFile(p)
+	}
+
 	// 1. Manifest + its detached signature.
-	mPath := filepath.Join(work, "manifest.json")
-	if _, err := FetchTo(ctx, manifestURL, mPath); err != nil {
-		return "", err
-	}
-	sPath := filepath.Join(work, "manifest.json.sig")
-	if _, err := FetchTo(ctx, manifestURL+".sig", sPath); err != nil {
-		return "", err
-	}
-	mData, err := os.ReadFile(mPath)
+	mData, err := fetch(manifestURL, "manifest.json")
 	if err != nil {
 		return "", err
 	}
-	sData, err := os.ReadFile(sPath)
+	mSig, err := fetch(manifestURL+".sig", "manifest.json.sig")
 	if err != nil {
 		return "", err
 	}
-	if !VerifyManifestSig(mData, sData, pubkey) {
+
+	// 2. Signing cert (sibling of the manifest), verified against the ROOT key.
+	certURL := manifestURL[:strings.LastIndex(manifestURL, "/")+1] + "signing-cert.json"
+	certData, err := fetch(certURL, "signing-cert.json")
+	if err != nil {
+		return "", fmt.Errorf("stage: fetch signing cert: %w", err)
+	}
+	certSig, err := fetch(certURL+".sig", "signing-cert.json.sig")
+	if err != nil {
+		return "", err
+	}
+	signingPub, certVer, err := trust.VerifyCert(certData, certSig, rootPub, time.Now())
+	if err != nil {
+		return "", fmt.Errorf("stage: %w", err)
+	}
+
+	// 3. Revocation FIRST: refuse a revoked/too-old signing cert before trusting it.
+	if revocationURL != "" {
+		revData, err := fetch(revocationURL, "revocation.json")
+		if err != nil {
+			return "", fmt.Errorf("stage: fetch revocation: %w", err)
+		}
+		revSig, err := fetch(revocationURL+".sig", "revocation.json.sig")
+		if err != nil {
+			return "", err
+		}
+		if err := trust.CheckRevocation(revData, revSig, rootPub, certVer); err != nil {
+			return "", fmt.Errorf("stage: %w", err)
+		}
+	}
+
+	// 4. Manifest signature vs the (root-vouched) signing key.
+	if !trust.Verify(mData, mSig, signingPub) {
 		return "", fmt.Errorf("stage: manifest signature invalid -- refusing update")
 	}
 	m, err := ParseManifest(mData)
