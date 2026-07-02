@@ -102,48 +102,11 @@ fn readFile(root: *File, path: [*:0]const u16) ?[]u8 {
     return buf[0..total];
 }
 
-// --- deployment.json (WAL): only the fields the loader needs, scanned by key. ---
-const Wal = struct { has_pending: bool, boot_attempts: i64, has_lkg: bool };
-
 fn valueStart(buf: []const u8, key: []const u8) ?usize {
     const k = std.mem.indexOf(u8, buf, key) orelse return null;
     var i = k + key.len;
     while (i < buf.len and (buf[i] == ' ' or buf[i] == ':')) i += 1;
     return i;
-}
-
-fn stringFieldNonEmpty(buf: []const u8, key: []const u8) bool {
-    const i = valueStart(buf, key) orelse return false;
-    if (i >= buf.len or buf[i] != '"') return false;
-    return i + 1 < buf.len and buf[i + 1] != '"';
-}
-
-fn intField(buf: []const u8, key: []const u8) i64 {
-    const start = valueStart(buf, key) orelse return 0;
-    var i = start;
-    var neg = false;
-    if (i < buf.len and buf[i] == '-') {
-        neg = true;
-        i += 1;
-    }
-    var n: i64 = 0;
-    while (i < buf.len and buf[i] >= '0' and buf[i] <= '9') : (i += 1) n = n * 10 + (buf[i] - '0');
-    return if (neg) -n else n;
-}
-
-fn parseWal(buf: []const u8) Wal {
-    return .{
-        .has_pending = stringFieldNonEmpty(buf, "\"pending\""),
-        .boot_attempts = intField(buf, "\"boot_attempts\""),
-        .has_lkg = stringFieldNonEmpty(buf, "\"last_known_good\""),
-    };
-}
-
-fn pickSlot(w: Wal) []const u8 {
-    if (w.has_pending and w.boot_attempts <= 0 and !w.has_lkg) return "kernelcache-recovery.efi";
-    if (w.has_pending and w.boot_attempts <= 0) return "kernelcache-prev.efi";
-    if (w.has_pending) return "kernelcache-next.efi";
-    return "kernelcache-active.efi";
 }
 
 // atomPath builds \EFI\atom\<name><suffix> as a null-terminated UTF-16 path.
@@ -165,17 +128,95 @@ fn atomPath(buf: []u16, name: []const u8, suffix: []const u8) [:0]const u16 {
     return buf[0..i :0];
 }
 
-// verifyEd25519 checks img against a 64-byte detached signature using the embedded
-// root key. Returns false on any problem, so the caller refuses the slot.
-fn verifyEd25519(img: []const u8, sigbuf: []const u8) bool {
+// verifyEd25519 checks img against a 64-byte detached signature using the given
+// public key. Returns false on any problem, so the caller refuses the slot.
+fn verifyEd25519(img: []const u8, sigbuf: []const u8, key: [32]u8) bool {
     if (sigbuf.len != 64) return false;
     const Ed = std.crypto.sign.Ed25519;
-    const pk = Ed.PublicKey.fromBytes(root_pubkey) catch return false;
+    const pk = Ed.PublicKey.fromBytes(key) catch return false;
     var sigbytes: [64]u8 = undefined;
     @memcpy(&sigbytes, sigbuf[0..64]);
     const sig = Ed.Signature.fromBytes(sigbytes);
     sig.verify(img, pk) catch return false;
     return true;
+}
+
+// stringValue extracts a flat JSON string value: key -> the text between the next
+// pair of quotes. Same by-key scan style as the WAL fields (no JSON lib).
+fn stringValue(buf: []const u8, key: []const u8) ?[]const u8 {
+    const i = valueStart(buf, key) orelse return null;
+    if (i >= buf.len or buf[i] != '"') return null;
+    const start = i + 1;
+    var e = start;
+    while (e < buf.len and buf[e] != '"') e += 1;
+    if (e >= buf.len) return null;
+    return buf[start..e];
+}
+
+// signingKeyFromCert implements the A4.1 chain on the loader side: read the
+// root-signed signing cert from the ESP, verify it against the embedded ROOT key,
+// and return the operational signing public key it vouches for. Returns null when
+// no cert is present (transition: the caller then falls back to the root key
+// directly) or when the cert fails to verify.
+fn signingKeyFromCert(root: *File) ?[32]u8 {
+    var cbuf: [96]u16 = undefined;
+    const cert = readFile(root, atomPath(&cbuf, "signing-cert.json", "")) orelse return null;
+    defer uefi.pool_allocator.free(cert);
+    var sbuf: [96]u16 = undefined;
+    const csig = readFile(root, atomPath(&sbuf, "signing-cert.json", ".sig")) orelse return null;
+    defer uefi.pool_allocator.free(csig);
+    if (!verifyEd25519(cert, csig, root_pubkey)) return null;
+    const b64 = stringValue(cert, "\"signing_pubkey\"") orelse return null;
+    var out: [32]u8 = undefined;
+    std.base64.standard.Decoder.decode(&out, b64) catch return null;
+    return out;
+}
+
+// --- boot-state (ESP /EFI/atom/boot-state): the loader's slot + trial state. ---
+const BootState = struct { target_next: bool, trial: bool, attempts: i64 };
+
+// kvLine returns the value of a line-start "key=value" entry (until end of line).
+fn kvLine(buf: []const u8, key: []const u8) ?[]const u8 {
+    var idx: usize = 0;
+    while (std.mem.indexOfPos(u8, buf, idx, key)) |k| {
+        const after = k + key.len;
+        if ((k == 0 or buf[k - 1] == '\n') and after < buf.len and buf[after] == '=') {
+            var e = after + 1;
+            while (e < buf.len and buf[e] != '\n' and buf[e] != '\r') e += 1;
+            return buf[after + 1 .. e];
+        }
+        idx = k + 1;
+    }
+    return null;
+}
+
+fn parseBootState(buf: []const u8) BootState {
+    var attempts: i64 = 0;
+    if (kvLine(buf, "attempts")) |v| {
+        for (v) |c| if (c >= '0' and c <= '9') {
+            attempts = attempts * 10 + (c - '0');
+        };
+    }
+    return .{
+        .target_next = if (kvLine(buf, "target")) |v| std.mem.eql(u8, v, "next") else false,
+        .trial = if (kvLine(buf, "trial")) |v| std.mem.eql(u8, v, "1") else false,
+        .attempts = attempts,
+    };
+}
+
+// writeBootState rewrites boot-state after decrementing the trial budget. Attempts
+// only shrinks, so overwriting from offset 0 is safe (the parser stops at newline,
+// so any 1-byte tail from a shorter number is ignored).
+fn writeBootState(root: *File, target_next: bool, trial: bool, attempts: i64) void {
+    var pbuf: [64]u16 = undefined;
+    const f = root.open(atomPath(&pbuf, "boot-state", ""), .read_write, .{}) catch return;
+    defer _ = f.close() catch {};
+    f.setPosition(0) catch {};
+    const target = if (target_next) "next" else "active";
+    const trialc: u8 = if (trial) '1' else '0';
+    var buf: [64]u8 = undefined;
+    const content = std.fmt.bufPrint(&buf, "target={s}\ntrial={c}\nattempts={d}\n", .{ target, trialc, attempts }) catch return;
+    _ = f.write(content) catch {};
 }
 
 // Minimal EFI_TCG2_PROTOCOL binding (not in std): enough to measure an image into a
@@ -221,7 +262,7 @@ fn measureIntoPcr(img: []const u8) bool {
 
 // chainloadSlot reads \EFI\atom\<slot>, verifies its detached .sig against the root
 // key, and only then hands control to it (framebuffer preserved).
-fn chainloadSlot(root: *File, slot: []const u8) bool {
+fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
     const bs = uefi.system_table.boot_services orelse return false;
     var pbuf: [96]u16 = undefined;
     const img = readFile(root, atomPath(&pbuf, slot, "")) orelse {
@@ -237,7 +278,7 @@ fn chainloadSlot(root: *File, slot: []const u8) bool {
     };
     defer uefi.pool_allocator.free(sig);
 
-    if (!verifyEd25519(img, sig)) {
+    if (!verifyEd25519(img, sig, key)) {
         puts("signature INVALID -- refusing to chain\r\n");
         return false;
     }
@@ -293,6 +334,13 @@ pub fn main() void {
     };
     renderSurface(root);
 
+    // Resolve the verification key: the root-verified signing key from the ESP
+    // cert (A4.1), or the root key directly during transition (no cert yet).
+    const vkey = signingKeyFromCert(root) orelse blk: {
+        puts("no signing cert, verifying against root key\r\n");
+        break :blk root_pubkey;
+    };
+
     // Hidden in-surface chooser: a keypress in a short window opens it.
     puts("chooser: press a key...\r\n");
     if (pollKey(3000)) {
@@ -301,21 +349,28 @@ pub fn main() void {
         puts("chooser -> ");
         puts(chosen);
         puts("\r\n");
-        if (!chainloadSlot(root, chosen)) puts("boot HALTED\r\n");
+        if (!chainloadSlot(root, chosen, vkey)) puts("boot HALTED\r\n");
         while (true) {}
     }
 
+    // Slot selection from the ESP boot-state (the daemon writes it; we own the
+    // trial budget). A pending candidate with attempts left boots -next after we
+    // decrement and persist; a spent budget falls back to -active.
     var slot: []const u8 = "kernelcache-active.efi";
-    if (readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\deployment.json"))) |w| {
-        slot = pickSlot(parseWal(w));
-        uefi.pool_allocator.free(w);
+    if (readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\boot-state"))) |b| {
+        const st = parseBootState(b);
+        if (st.trial and st.target_next and st.attempts > 0) {
+            writeBootState(root, true, true, st.attempts - 1);
+            slot = "kernelcache-next.efi";
+        }
+        uefi.pool_allocator.free(b);
     } else {
-        puts("no WAL, defaulting to active\r\n");
+        puts("no boot-state, defaulting to active\r\n");
     }
 
     puts("selected slot: ");
     puts(slot);
     puts("\r\n");
-    if (!chainloadSlot(root, slot)) puts("boot HALTED (no valid slot)\r\n");
+    if (!chainloadSlot(root, slot, vkey)) puts("boot HALTED (no valid slot)\r\n");
     while (true) {}
 }
