@@ -159,10 +159,28 @@ func (b Bundle) Compact(dmesgLines int) []byte {
 	if fu := strings.TrimSpace(string(b.section("failed-units"))); fu != "" {
 		fmt.Fprintf(&sb, "failed: %s\n", strings.Join(strings.Fields(fu), " "))
 	}
-	if dm := b.section("dmesg"); len(dm) > 0 {
+	if dm := b.section("dmesg"); len(dm) > 0 && dmesgLines > 0 {
 		fmt.Fprintf(&sb, "dmesg-tail:\n%s\n", lastLines(dm, dmesgLines))
 	}
 	return []byte(sb.String())
+}
+
+// CompactWithin returns the compact report and its encoded QR payload, shrinking
+// the dmesg tail until the encoded payload fits budget bytes so it renders in one
+// QR. The header fields (stage, error, id, cmdline, failed units) are always kept;
+// only the dmesg tail is trimmed, down to none if it must. The last return value
+// is how many dmesg lines survived.
+func (b Bundle) CompactWithin(budget int) (compact, encoded []byte, dmesgLines int) {
+	for lines := 40; ; lines -= 4 {
+		if lines < 0 {
+			lines = 0
+		}
+		compact = b.Compact(lines)
+		encoded = EncodeQRPayload(compact)
+		if len(encoded) <= budget || lines == 0 {
+			return compact, encoded, lines
+		}
+	}
 }
 
 // EncodeQRPayload wraps a payload for the QR channel: a self-describing header

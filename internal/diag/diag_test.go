@@ -67,3 +67,31 @@ func TestCollectFullCompactRoundtrip(t *testing.T) {
 		t.Fatalf("roundtrip mismatch")
 	}
 }
+
+func TestCompactWithinBudget(t *testing.T) {
+	// a big dmesg that would blow any small budget; header fields stay, tail shrinks
+	big := make([]byte, 0, 40000)
+	for i := 0; i < 2000; i++ {
+		big = append(big, []byte("kernel: some noisy diagnostic line number here\n")...)
+	}
+	b := Bundle{
+		Stage: "boot", Error: "verity corrupted", When: "2026-07-03T00:00:00Z",
+		Sections: []Section{
+			{Label: "cmdline", Data: []byte("root=/dev/mapper/vroot roothash=deadbeef")},
+			{Label: "failed-units", Data: []byte("sintylogs.service")},
+			{Label: "dmesg", Data: big},
+		},
+	}
+	for _, budget := range []int{600, 1200, 1800} {
+		compact, encoded, kept := b.CompactWithin(budget)
+		if len(encoded) > budget {
+			t.Errorf("budget %d: encoded %d bytes exceeds", budget, len(encoded))
+		}
+		if !strings.Contains(string(compact), "stage: boot") || !strings.Contains(string(compact), "error: verity corrupted") || !strings.Contains(string(compact), "roothash=deadbeef") {
+			t.Errorf("budget %d: header fields dropped", budget)
+		}
+		if kept < 0 {
+			t.Errorf("negative kept")
+		}
+	}
+}
