@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -144,7 +145,7 @@ func loopAttach(file string) string {
 	return loop
 }
 
-func mountSystem() (string, bool) {
+func mountSystem() (string, string, bool) {
 	target := "/sysdata"
 	os.MkdirAll(target, 0755)
 	for _, dev := range devCandidates() {
@@ -156,11 +157,29 @@ func mountSystem() (string, bool) {
 		}
 		if _, err := os.Stat(target + "/boot/rootfs/rootfs-active.erofs"); err == nil {
 			fmt.Printf("[init] system partition: %s\n", dev)
-			return target, true
+			return target, dev, true
 		}
 		syscall.Unmount(target, 0)
 	}
-	return "", false
+	return "", "", false
+}
+
+// parentDisk returns the whole-disk device (e.g. /dev/nvme0n1) that dev is a
+// partition of, resolved via sysfs. It is empty when dev is not a partition or
+// cannot be resolved, which the caller treats as "do not touch this device."
+func parentDisk(dev string) string {
+	real, err := filepath.EvalSymlinks("/sys/class/block/" + filepath.Base(dev))
+	if err != nil {
+		return ""
+	}
+	parent := filepath.Base(filepath.Dir(real))
+	if parent == "" || parent == "block" {
+		return ""
+	}
+	if _, err := os.Stat("/sys/class/block/" + parent); err != nil {
+		return ""
+	}
+	return "/dev/" + parent
 }
 
 func setupVerity(sysMount string) string {
@@ -203,9 +222,23 @@ func setupVerity(sysMount string) string {
 	return verityDev
 }
 
-func mountVar(rootMount string) bool {
+// mountVar mounts the persistent /var, but ONLY from a partition on the SAME
+// physical disk as the verified root (rootDev). This is the isolation guarantee: a
+// live USB boot must never mount the internal disk's /var, which holds the
+// installed user's home, config and etc-upper. No same-disk /var means live mode,
+// and the caller falls back to tmpfs. A .atom-var marker on another disk is
+// deliberately ignored: the marker alone is not enough, it must be the root's disk.
+func mountVar(rootMount, rootDev string) bool {
+	disk := parentDisk(rootDev)
+	if disk == "" {
+		fmt.Fprintf(os.Stderr, "[init] cannot resolve root disk for %s, refusing cross-disk /var\n", rootDev)
+		return false
+	}
 	target := rootMount + "/var"
 	for _, dev := range devCandidates() {
+		if parentDisk(dev) != disk {
+			continue // never touch a partition on any other physical disk
+		}
 		if _, err := os.Stat(dev); err != nil {
 			continue
 		}
@@ -213,7 +246,7 @@ func mountVar(rootMount string) bool {
 			continue
 		}
 		if _, err := os.Stat(target + "/.atom-var"); err == nil {
-			fmt.Printf("[init] persistent /var: %s\n", dev)
+			fmt.Printf("[init] persistent /var: %s (same disk as root: %s)\n", dev, disk)
 			return true
 		}
 		syscall.Unmount(target, 0)
@@ -256,7 +289,7 @@ func main() {
 	fmt.Println("[init] loading kernel modules")
 	loadKernelModules()
 
-	sysMount, ok := mountSystem()
+	sysMount, sysDev, ok := mountSystem()
 	if !ok {
 		fmt.Fprintf(os.Stderr, "[init] no Atom Loops system partition found\n")
 		dropToShell()
@@ -291,7 +324,7 @@ func main() {
 	}
 	fmt.Printf("[init] mounted verified EROFS root on %s\n", rootMount)
 
-	if mountVar(rootMount) {
+	if mountVar(rootMount, sysDev) {
 		os.MkdirAll(rootMount+"/var/etc-upper", 0755)
 		os.MkdirAll(rootMount+"/var/etc-work", 0755)
 		etcOpts := fmt.Sprintf("lowerdir=%s/etc,upperdir=%s/var/etc-upper,workdir=%s/var/etc-work",
