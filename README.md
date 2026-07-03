@@ -1,9 +1,9 @@
 # Atom Loops
 
-Atomic OTA updates for Singularity OS: signed file-based artifacts, greenboot
-health-gating, monotonic anti-rollback, and a custom UEFI loader. It is the
-update state machine that sits under the init (sinit): it never owns PID 1, it
-owns the deployment.
+Atomic OTA updates for Singularity OS: signed file-based artifacts, health-gated
+boot confirmation, monotonic anti-rollback, and a custom UEFI loader. It runs as
+a service under the init (sinit), never as PID 1, and owns the update lifecycle:
+staging, boot confirmation, and rollback.
 
 ## Requirements
 
@@ -20,11 +20,11 @@ cd loader && sh build.sh   # BOOTX64.EFI (needs zig 0.16)
 ## Components
 
 - `internal/deployment` - the deployment.json WAL (single source of truth).
-- `internal/otad` + `cmd/atomd` - the daemon: greenboot boot-success, staging,
+- `internal/otad` + `cmd/atomd` - the daemon: boot confirmation, staging,
   anti-rollback, recovery.
 - `internal/trust` + `internal/signing` + `cmd/atom-sign` - the two-level key
-  chain (root cert to signing key to manifest) and the release tooling.
-- `loader/` - the Zig UEFI loader: boot-state artifact selection (current/pending/rollback) and signature
+  chain (root cert, signing key, manifest) and the release tooling.
+- `loader/` - the Zig UEFI loader: boot-slot selection and signature
   verification before chainloading the kernelcache.
 
 ## Security model
