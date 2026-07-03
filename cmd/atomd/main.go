@@ -38,9 +38,15 @@ func pickCounter(filePath, readCmd, advanceCmd string) otad.CounterStore {
 	return otad.FileCounter{Path: filePath}
 }
 
-func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manifestURL, revocationURL, pubkeyPath, cron string, dirs otad.StageDirs) int {
+func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manifestURL, revocationURL, pubkeyPath, cron, installedMarker string, dirs otad.StageDirs) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+
+	if !isInstalled(installedMarker) {
+		fmt.Printf("atomd: live/uninstalled system (no %s), staying inert: no boot-success, no counter, no update checks\n", installedMarker)
+		<-ctx.Done()
+		return 0
+	}
 
 	if msg, err := otad.BootSuccess(wal, healthDir, store, dirs); err != nil {
 		fmt.Fprintln(os.Stderr, "atomd: boot-success:", err)
@@ -83,6 +89,19 @@ const defaultHealthDir = "/etc/atom/health.d"
 const defaultCounter = "/var/lib/atom/anti-rollback"
 const defaultAudit = "/var/log/atom/history.jsonl"
 
+// defaultInstalledMarker is written by the initramfs only when it mounts a real,
+// same-disk persistent /var (an installed system). A live USB boot gets tmpfs /var
+// and no marker. atomd fails safe: without this marker it never confirms a boot,
+// advances the anti-rollback counter, or stages -- so a live boot on someone
+// else's machine cannot touch that machine's per-machine hardware state (TPM/RPMB).
+const defaultInstalledMarker = "/run/atom/installed"
+
+// isInstalled reports whether this is an installed system (marker present).
+func isInstalled(marker string) bool {
+	_, err := os.Stat(marker)
+	return err == nil
+}
+
 var version = "dev"
 
 func main() {
@@ -120,12 +139,13 @@ func run(args []string) int {
 		counterRead := fs.String("counter-read", "", "shell command printing the hardware counter (TPM2/RPMB); overrides --counter")
 		counterAdvance := fs.String("counter-advance", "", "shell command to advance the hardware counter (ATOM_COUNTER=target)")
 		auditPath := fs.String("audit", defaultAudit, "update-history log")
+		installed := fs.String("installed-marker", defaultInstalledMarker, "path the initramfs writes on an installed system; absent = live, atomd inert")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "where rootfs-next lands")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "where kernelcache-next lands")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
-		return runDaemon(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), *auditPath, *manifest, *revocation, *pubkeyPath, *cron,
+		return runDaemon(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), *auditPath, *manifest, *revocation, *pubkeyPath, *cron, *installed,
 			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir})
 	case "recover":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
@@ -172,10 +192,15 @@ func run(args []string) int {
 		counter := fs.String("counter", defaultCounter, "anti-rollback counter file")
 		counterRead := fs.String("counter-read", "", "shell command printing the hardware counter (TPM2/RPMB); overrides --counter")
 		counterAdvance := fs.String("counter-advance", "", "shell command to advance the hardware counter (ATOM_COUNTER=target)")
+		installed := fs.String("installed-marker", defaultInstalledMarker, "path the initramfs writes on an installed system; absent = live, boot-success is a no-op")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot dir (for promote rename + boot-state)")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP slot dir (for promote rename + boot-state)")
 		if err := fs.Parse(rest); err != nil {
 			return 2
+		}
+		if !isInstalled(*installed) {
+			fmt.Printf("atomd: live/uninstalled system (no %s), boot-success is a no-op\n", *installed)
+			return 0
 		}
 		return report(otad.BootSuccess(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir}))
 	case "status":
