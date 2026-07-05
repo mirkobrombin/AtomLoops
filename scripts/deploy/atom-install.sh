@@ -57,9 +57,12 @@ echo "[atom-install] writing ESP and system images"
 dd if="${ESP}"    of="$(P 1)" bs=4M conv=fsync status=none
 dd if="${SYSTEM}" of="$(P 2)" bs=4M conv=fsync status=none
 echo "[atom-install] creating empty persistent /var (f2fs + fscrypt)"
-mkfs.f2fs -f -l atom-var -O encrypt,extra_attr,project_quota "$(P 3)"
+# encrypt = fscrypt; extra_attr = inline xattr (needed by encrypt). NOT project_quota:
+# it makes the superblock unmountable without kernel CONFIG_QUOTA, and we have no
+# per-user/app disk-quota plan (reversible: re-add the flag + 4 kernel configs if wanted).
+mkfs.f2fs -f -l atom-var -O encrypt,extra_attr "$(P 3)"
 tmp="$(mktemp -d)"
-mount "$(P 3)" "${tmp}"
+mount -t f2fs "$(P 3)" "${tmp}"
 mkdir -p "${tmp}"/{home,etc-upper,etc-work,lib,cache,log,spool,tmp,run}
 chmod 1777 "${tmp}/tmp"
 : > "${tmp}/.atom-var"
