@@ -161,7 +161,7 @@ fn signingKeyFromCert(root: *File) ?[32]u8 {
 }
 
 // --- boot-state (ESP /EFI/atom/boot-state): the loader's slot + trial state. ---
-const BootState = struct { target_next: bool, trial: bool, attempts: i64 };
+const BootState = struct { target_next: bool, trial: bool, attempts: i64, recovery: bool };
 
 // kvLine returns the value of a line-start "key=value" entry (until end of line).
 fn kvLine(buf: []const u8, key: []const u8) ?[]const u8 {
@@ -189,6 +189,7 @@ fn parseBootState(buf: []const u8) BootState {
         .target_next = if (kvLine(buf, "target")) |v| std.mem.eql(u8, v, "next") else false,
         .trial = if (kvLine(buf, "trial")) |v| std.mem.eql(u8, v, "1") else false,
         .attempts = attempts,
+        .recovery = if (kvLine(buf, "target")) |v| std.mem.eql(u8, v, "recovery") else false,
     };
 }
 
@@ -347,7 +348,14 @@ pub fn main() void {
     var slot: []const u8 = "kernelcache-active.efi";
     if (readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\boot-state"))) |b| {
         const st = parseBootState(b);
-        if (st.trial and st.target_next and st.attempts > 0) {
+        if (st.recovery) {
+            // The OS asked for recovery, or the daemon armed it on NeedsRecovery
+            // (a spent candidate with no good slot to fall back to). Boot the
+            // signed recovery slot: a separate, always-present volume that
+            // survives a dead main.
+            puts("boot-state: recovery requested\r\n");
+            slot = "kernelcache-recovery.efi";
+        } else if (st.trial and st.target_next and st.attempts > 0) {
             writeBootState(root, true, true, st.attempts - 1);
             slot = "kernelcache-next.efi";
         }

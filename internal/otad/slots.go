@@ -23,7 +23,13 @@ func SyncBootState(walPath string, dirs StageDirs) error {
 		return err
 	}
 	b := BootState{Target: "active"}
-	if d.HasPending() {
+	switch {
+	case d.NeedsRecovery():
+		// A candidate spent its whole trial budget with no good slot to fall back
+		// to: arm the loader to boot the always-present recovery slot instead of
+		// looping on a dead main.
+		b = BootState{Target: "recovery"}
+	case d.HasPending():
 		b = BootState{Target: "next", Trial: true, Attempts: d.RootFS.BootAttempts}
 	}
 	return WriteBootState(filepath.Join(dirs.ESP, "boot-state"), b)
@@ -33,7 +39,7 @@ func SyncBootState(walPath string, dirs StageDirs) error {
 // the daemon writes it, the Zig loader reads (and decrements attempts) pre-boot.
 // Line-based key=value by contract so the loader parses it without a JSON lib.
 type BootState struct {
-	Target   string // "active" or "next": which kernelcache slot to boot
+	Target   string // "active", "next", or "recovery": which kernelcache slot to boot
 	Trial    bool   // a candidate trial is in progress
 	Attempts int    // remaining trial boots (loader decrements; 0 -> fall back to active)
 }
