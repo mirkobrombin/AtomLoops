@@ -242,7 +242,17 @@ func mountVar(rootMount, rootDev string) bool {
 		if _, err := os.Stat(dev); err != nil {
 			continue
 		}
-		if syscall.Mount(dev, target, "ext4", 0, "") != nil {
+		// f2fs is the encrypted-data format (fscrypt); ext4 is kept for
+		// transition/old images. syscall.Mount does not probe the fs, so try
+		// each explicitly.
+		mounted := false
+		for _, fstype := range []string{"f2fs", "ext4"} {
+			if syscall.Mount(dev, target, fstype, 0, "") == nil {
+				mounted = true
+				break
+			}
+		}
+		if !mounted {
 			continue
 		}
 		if _, err := os.Stat(target + "/.atom-var"); err == nil {

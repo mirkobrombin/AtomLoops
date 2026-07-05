@@ -56,8 +56,8 @@ P() { case "${DEV}" in *[0-9]) echo "${DEV}p$1";; *) echo "${DEV}$1";; esac; }
 echo "[atom-install] writing ESP and system images"
 dd if="${ESP}"    of="$(P 1)" bs=4M conv=fsync status=none
 dd if="${SYSTEM}" of="$(P 2)" bs=4M conv=fsync status=none
-echo "[atom-install] creating empty persistent /var"
-mke2fs -q -t ext4 -L atom-var "$(P 3)"
+echo "[atom-install] creating empty persistent /var (f2fs + fscrypt)"
+mkfs.f2fs -f -l atom-var -O encrypt,extra_attr,project_quota "$(P 3)"
 tmp="$(mktemp -d)"
 mount "$(P 3)" "${tmp}"
 mkdir -p "${tmp}"/{home,etc-upper,etc-work,lib,cache,log,spool,tmp,run}
