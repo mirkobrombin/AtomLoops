@@ -1,3 +1,13 @@
+// initramfs-main is the initramfs init for the AtomLoops STANDALONE build path
+// (scripts/build/fetch-release.sh -> scripts/boot/initramfs-build.sh ->
+// build-kernelcache.sh), used to build and test the OTA kernelcache on its own.
+//
+// IT IS NOT THE INITRAMFS SHIPPED IN THE SINTY RC IMAGE. The Sinty buildroot image
+// bakes singularity-os/scripts/build-initramfs.sh (busybox shell init) into the UKI
+// via package.sh -- THAT is the canonical RC initramfs. E2E bug 6: an f2fs /var
+// mount fix applied here did NOT reach the RC because the RC uses the shell one.
+// KEEP THE TWO IN LOCKSTEP: any boot-chain change (var-mount fstype, verity, slot
+// selection) must be applied to BOTH this file and build-initramfs.sh.
 package main
 
 import (
