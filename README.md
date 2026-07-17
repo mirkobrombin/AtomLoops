@@ -63,7 +63,7 @@ a distribution image, plus mocks for the build and deploy infrastructure.
 
 ## Requirements
 
-- Go >= 1.22 (daemon + release tools)
+- Go >= 1.26 (daemon + release tools)
 - Zig 0.16 (the UEFI loader, `loader/`)
 
 ## Build
