@@ -192,6 +192,20 @@ func parentDisk(dev string) string {
 	return "/dev/" + parent
 }
 
+// verityFail aborts the boot CLOSED when the root image fails dm-verity. It must NOT
+// fall back to the raw unverified device: a verity failure on a signed boot means the
+// rootfs was tampered with or corrupted, and mounting it anyway defeats the entire
+// verified-boot chain (loader Ed25519 -> UKI -> dm-verity root). Powers off so a
+// tampered system never boots.
+func verityFail(reason string) {
+	fmt.Fprintf(os.Stderr, "\n[init] FATAL: root image failed dm-verity (%s).\n", reason)
+	fmt.Fprintln(os.Stderr, "[init] Refusing to mount a possibly-tampered rootfs. Powering off.")
+	syscall.Sync()
+	time.Sleep(3 * time.Second) // let the message reach the console
+	_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
+	select {} // unreachable: the machine is powering off
+}
+
 func setupVerity(sysMount string) string {
 	erofsFile := sysMount + "/boot/rootfs/rootfs-active.erofs"
 	hashFile := sysMount + "/boot/rootfs/rootfs-active.hash"
@@ -214,19 +228,23 @@ func setupVerity(sysMount string) string {
 	}
 	hashLoop := loopAttach(hashFile)
 	if hashLoop == "" {
-		return dataLoop
+		// a root hash is set but the hash tree can't be attached -> can't verify -> stop
+		verityFail("hash device attach failed")
+		return ""
 	}
 
 	cmd := exec.Command("/sbin/veritysetup", "open", dataLoop, "atom-verity", hashLoop, rootHash)
 	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/lib")
 	if o, err := cmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "[init] veritysetup open failed: %v %s\n", err, strings.TrimSpace(string(o)))
-		return dataLoop
+		// open failure = hash mismatch = the rootfs was TAMPERED/corrupted. Fail CLOSED,
+		// never fall back to the raw device.
+		verityFail(fmt.Sprintf("veritysetup open failed: %v %s", err, strings.TrimSpace(string(o))))
+		return ""
 	}
 	verityDev := "/dev/mapper/atom-verity"
 	if _, err := os.Stat(verityDev); err != nil {
-		fmt.Fprintf(os.Stderr, "[init] %s missing after open\n", verityDev)
-		return dataLoop
+		verityFail(fmt.Sprintf("%s missing after open", verityDev))
+		return ""
 	}
 	fmt.Printf("[init] dm-verity active on %s\n", verityDev)
 	return verityDev
