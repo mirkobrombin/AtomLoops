@@ -1,4 +1,14 @@
-# Atom Loops
+<p align="center">
+  <img src="docs/img/logo.png" alt="Atom Loops" width="128">
+</p>
+
+<h1 align="center">Atom Loops</h1>
+
+<p align="center">
+  Atomic and reproducible operating-system deployment for embedded and desktop Linux.
+</p>
+
+---
 
 Atom Loops is an open source system for atomic and reproducible deployment of the
 operating system on embedded and desktop Linux devices. An update is one
@@ -7,6 +17,25 @@ transaction: download, verify, switch, with automatic rollback on boot failure.
 It is not a Linux distribution and not a package manager. It consumes a finished
 system image and owns only the deploy and rollback lifecycle. It needs no
 container engine, no registry, and no dedicated partition layout beyond an ESP.
+
+## How it works
+
+A background daemon prepares the update while the system runs: it checks the
+revocation list, verifies the signed manifest, downloads only what changed,
+re-verifies the artifacts and stages them. Nothing is switched yet.
+
+<p align="center">
+  <img src="docs/img/deploy.png" alt="Update flow: revocation check, manifest verification, version and hash comparison, download, pre-verification, staging, transactional update" width="460">
+</p>
+
+The switch happens at the next boot, and the boot decides whether it holds. The
+initramfs checks the anti-rollback counter, reads the write-ahead log, sets up
+dm-verity and swaps the slots; if the attempt counter runs out the device falls
+back or enters recovery. Only after enough good boots is the new image promoted.
+
+<p align="center">
+  <img src="docs/img/boot.png" alt="Boot layers: firmware verifies the bootloader, the initramfs checks anti-rollback and the WAL then performs the atomic switch, the runtime stabilizes and promotes the fallback" width="560">
+</p>
 
 ## Status
 
