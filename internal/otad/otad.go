@@ -40,12 +40,44 @@ func Init(walPath, deviceID, rootfsVersion string) (string, error) {
 // reaches stable_threshold). With no candidate in flight it is a no-op. A failed
 // health gate leaves the WAL untouched, so boot_attempts continues to drain and
 // the initramfs will roll the candidate back on a later boot.
+// bootedVerityHash returns the dm-verity ROOT hash of the rootfs SLOT the system actually
+// booted, read straight from the running kernel's /proc/cmdline (ATOM_ROOT_HASH= or the
+// singularity-os sing.roothash=). The loader bakes this into each slot's SIGNED UKI, so an
+// attacker can't forge it and no init cooperation is needed. Empty if absent (then
+// BootSuccess cannot reconcile and keeps its prior behaviour).
+var bootedVersionPath = "/proc/cmdline" // overridable in tests
+
+func bootedVerityHash() string {
+	b, err := os.ReadFile(bootedVersionPath)
+	if err != nil {
+		return ""
+	}
+	for _, tok := range strings.Fields(string(b)) {
+		if v, ok := strings.CutPrefix(tok, "ATOM_ROOT_HASH="); ok {
+			return v
+		}
+		if v, ok := strings.CutPrefix(tok, "sing.roothash="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 func BootSuccess(walPath, healthDir string, store CounterStore, dirs StageDirs) (string, error) {
 	d, err := deployment.Load(walPath)
 	if err != nil {
 		return "", err
 	}
 	if !d.HasPending() {
+		// Reconcile the hardware anti-rollback counter with the WAL. promote() sets
+		// AntiRollback.CounterValue and Saves the WAL BEFORE store.Advance runs; a crash in
+		// that window would leave the hardware floor behind the WAL. Retry it here (Advance is
+		// monotonic -> a no-op once armed), so the floor eventually catches up on any later boot.
+		if store != nil && d.AntiRollback.CounterValue > 0 {
+			if cur, rerr := store.Read(); rerr == nil && cur < uint64(d.AntiRollback.CounterValue) {
+				_ = store.Advance(uint64(d.AntiRollback.CounterValue))
+			}
+		}
 		_ = SyncBootState(walPath, dirs) // keep the ESP pointing at -active when stable
 		return "stable: no candidate in flight, nothing to confirm", nil
 	}
@@ -53,6 +85,24 @@ func BootSuccess(walPath, healthDir string, store CounterStore, dirs StageDirs) 
 		return "", fmt.Errorf("health gate failed, candidate left unconfirmed: %w", err)
 	}
 	cand := d.RootFS.Pending
+	// Only confirm the candidate if the RUNNING system IS the candidate. The loader
+	// can silently fall back to -active when the trial budget is spent; without this check a
+	// fallback boot of the old-good image would be counted as a "good boot" for the candidate
+	// and eventually promote a DEAD candidate -> brick. Inert until the init writes the marker
+	// (empty running -> old behaviour), active once /run/atom/booted-version is wired.
+	if bh := bootedVerityHash(); bh != "" && d.RootFS.PendingHash != "" && bh != d.RootFS.PendingHash {
+		d.Kernelcache.StableBoots = 0
+		exhausted := d.DecrementBootAttempt()
+		if exhausted {
+			d.Rollback() // budget spent and the candidate never booted -> return to last_known_good
+		}
+		if err := d.Save(walPath); err != nil {
+			return "", err
+		}
+		_ = SyncBootState(walPath, dirs)
+		return fmt.Sprintf("candidate %s did NOT boot (booted verity hash %s != pending %s); failed attempt recorded (exhausted=%v)",
+			cand, bh, d.RootFS.PendingHash, exhausted), nil
+	}
 	promoted := d.RecordGoodBoot()
 	if err := d.Save(walPath); err != nil {
 		return "", err
@@ -85,6 +135,10 @@ func RunHealthChecks(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// A missing health dir counts as healthy: health checks are opt-in, and
+			// failing closed here would roll back every update on a system that
+			// configures none. Narrowed by the check above: only the candidate that is
+			// actually running is ever promoted.
 			return nil
 		}
 		return err

@@ -142,6 +142,7 @@ func Stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 		return "", err
 	}
 	d.Deploy(m.Version)
+	d.RootFS.PendingHash = m.RootFSVerityHash // record the candidate's verity hash for the boot-check
 	if err := d.Save(walPath); err != nil {
 		return "", err
 	}

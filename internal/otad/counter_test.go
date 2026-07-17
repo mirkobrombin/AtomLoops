@@ -48,6 +48,42 @@ func TestBootSuccessArmsCounter(t *testing.T) {
 	}
 }
 
+type laggingCounter struct{ v uint64 }
+
+func (c *laggingCounter) Read() (uint64, error) { return c.v, nil }
+func (c *laggingCounter) Advance(to uint64) error {
+	if to > c.v {
+		c.v = to
+	}
+	return nil
+}
+
+// If a crash left the hardware anti-rollback counter behind the promoted WAL,
+// a later stable boot must reconcile (retry the advance), not leave the floor lagged.
+func TestBootSuccessReconcilesLaggedCounter(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	wal := newWAL(t)
+	if _, err := Deploy(wal, "v2"); err != nil {
+		t.Fatal(err)
+	}
+	health := t.TempDir()
+	cnt := &laggingCounter{}
+	for i := 0; i < 3; i++ { // promote v2 -> WAL CounterValue=2, counter armed to 2
+		if _, err := BootSuccess(wal, health, cnt, StageDirs{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cnt.v = 1 // simulate the crash: hardware floor left behind the promoted WAL (=2)
+	if _, err := BootSuccess(wal, health, cnt, StageDirs{}); err != nil {
+		t.Fatal(err)
+	}
+	if cnt.v != 2 {
+		t.Fatalf("lagged counter not reconciled on a stable boot: got %d, want 2", cnt.v)
+	}
+}
+
 func TestCommandCounter(t *testing.T) {
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skip("no /bin/sh")

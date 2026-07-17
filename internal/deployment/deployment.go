@@ -39,6 +39,10 @@ type Deployment struct {
 type RootFS struct {
 	Current         string `json:"current"`
 	Pending         string `json:"pending"`
+	// PendingHash is the candidate's dm-verity root hash (the value baked into its signed
+	// UKI cmdline as ATOM_ROOT_HASH). The daemon compares it to the hash the init actually
+	// booted so it never confirms a candidate the loader silently fell back away from.
+	PendingHash     string `json:"pending_hash,omitempty"`
 	Rollback        string `json:"rollback"`
 	BootAttempts    int    `json:"boot_attempts"`
 	MaxAttempts     int    `json:"max_attempts"`

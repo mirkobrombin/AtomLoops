@@ -24,6 +24,10 @@ type Manifest struct {
 	MinVersion      string `json:"min_version"`
 	RootFSURL       string `json:"rootfs_url"`
 	RootFSHash      string `json:"rootfs_hash"`
+	// RootFSVerityHash is the candidate's dm-verity ROOT hash (distinct from RootFSHash, the
+	// file SHA256). It equals the ATOM_ROOT_HASH baked into the candidate's signed UKI cmdline,
+	// and lets the daemon confirm the candidate actually booted. Optional for back-compat.
+	RootFSVerityHash string `json:"rootfs_verity_hash,omitempty"`
 	KernelcacheURL  string `json:"kernelcache_url"`
 	KernelcacheHash string `json:"kernelcache_hash"`
 }

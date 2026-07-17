@@ -53,16 +53,41 @@ func (b BootState) Marshal() string {
 	return fmt.Sprintf("target=%s\ntrial=%d\nattempts=%d\n", b.Target, trial, b.Attempts)
 }
 
-// WriteBootState writes the ESP boot-state atomically (temp + rename).
+// WriteBootState writes the ESP boot-state crash-durably: a unique temp is
+// written, fsync'd, atomically renamed, and the ESP directory is fsync'd. This is the
+// single file that decides which slot boots; on the FAT ESP an unflushed/torn write on
+// power loss would leave the loader defaulting to 'active' (boot loop / recovery not
+// armed). The unique temp name also avoids the collision of a fixed ".tmp".
 func WriteBootState(path string, b BootState) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.Marshal()), 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if _, err := tmp.Write([]byte(b.Marshal())); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	if d, derr := os.Open(dir); derr == nil { // best-effort dir fsync (FAT may not support it)
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
 
 // ReadBootState parses the ESP boot-state (the same fields the loader reads).
