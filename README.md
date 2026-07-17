@@ -93,11 +93,6 @@ checks revocation first, then the cert against the root, then the manifest
 against the signing key, then the artifacts by SHA256. See
 [docs/RELEASE-RUNBOOK.md](docs/RELEASE-RUNBOOK.md).
 
-## Relationship to sinit
-
-Atom Loops does not replace the init. The running-system half (atomd) confirms or
-rolls back the boot; [sinit](https://github.com/singularityos-lab/sinit) is PID 1.
-
 ## License
 
 GPL-3.0 - see [LICENSE](LICENSE).
