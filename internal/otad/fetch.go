@@ -26,6 +26,34 @@ func fetchClient() *httpx.Client {
 		})
 }
 
+// ProgressFunc reports download progress as bytes flow: done so far and the total
+// (total is -1 when the server does not send Content-Length).
+type ProgressFunc func(done, total int64)
+
+type progressKey struct{}
+
+// WithProgress attaches a callback FetchTo invokes during an artifact download, so the
+// update agent can drive the dock progress bar. Opt-in: no callback, no overhead.
+func WithProgress(ctx context.Context, cb ProgressFunc) context.Context {
+	return context.WithValue(ctx, progressKey{}, cb)
+}
+
+type progressReader struct {
+	r     io.Reader
+	cb    ProgressFunc
+	done  int64
+	total int64
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.done += int64(n)
+		p.cb(p.done, p.total)
+	}
+	return n, err
+}
+
 // FetchTo downloads url to dest atomically (temp + fsync + rename), retrying
 // transient transport failures. Returns the number of bytes written.
 func FetchTo(ctx context.Context, url, dest string) (int64, error) {
@@ -46,7 +74,11 @@ func FetchTo(ctx context.Context, url, dest string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	n, err := io.Copy(f, resp.Body)
+	var body io.Reader = resp.Body
+	if cb, ok := ctx.Value(progressKey{}).(ProgressFunc); ok && cb != nil {
+		body = &progressReader{r: resp.Body, cb: cb, total: resp.ContentLength}
+	}
+	n, err := io.Copy(f, body)
 	if err != nil {
 		f.Close()
 		os.Remove(tmp)
