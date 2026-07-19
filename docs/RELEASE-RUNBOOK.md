@@ -72,7 +72,7 @@ refuses any manifest whose version is below the version already installed.
 
 ## 2. The device installs it
 
-Run the daemon as a service under sinit. It confirms the current boot at startup
+Run the daemon as a service under your init system. It confirms the current boot at startup
 (greenboot) and, if a manifest URL is configured, polls for updates on a schedule
 and stages any it verifies.
 
