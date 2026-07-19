@@ -5,7 +5,7 @@ actually happens, and where the system decides whether the new image is allowed 
 stay. If it is not, the boot chain returns to the last good image on its own.
 
 <p align="center">
-  <img src="../img/boot.png" alt="Boot layers" width="560">
+  <img src="../../img/boot.png" alt="Boot layers" width="560">
 </p>
 
 ## The layers

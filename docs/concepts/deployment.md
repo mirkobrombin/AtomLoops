@@ -5,7 +5,7 @@ next update and stages it, but never switches anything on its own. The switch is
 boot-time decision, covered in [Boot lifecycle](boot.md).
 
 <p align="center">
-  <img src="../img/deploy.png" alt="Deployment flow" width="480">
+  <img src="../../img/deploy.png" alt="Deployment flow" width="480">
 </p>
 
 ## The stages
