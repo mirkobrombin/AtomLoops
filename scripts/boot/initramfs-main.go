@@ -247,7 +247,11 @@ func setupVerity(sysMount string) string {
 	// a missing sintykey, an unreachable TPM, or either fact reading locked/on keeps
 	// full dm-verity enforcement.
 	if verityDisabledByUnlock() {
-		fmt.Println("[init] device is UNLOCKED (verity off in TPM); mounting rootfs without dm-verity")
+		// Persistent per-boot notice: an unlocked device warns every time it boots.
+		fmt.Println("[init] ==================================================================")
+		fmt.Println("[init]  DEVICE UNLOCKED - verified boot is OFF, this system is not sealed")
+		fmt.Println("[init]  mounting the root image without dm-verity")
+		fmt.Println("[init] ==================================================================")
 		return dataLoop
 	}
 
