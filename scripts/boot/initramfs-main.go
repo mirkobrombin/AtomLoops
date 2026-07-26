@@ -103,17 +103,35 @@ func loadKernelModules() {
 	}
 }
 
+// cmdlineValue returns the value of key=... in a kernel cmdline, or "" if the key
+// is absent. Isolated from the /proc read so the verity-gate parse is testable.
+func cmdlineValue(cmdline, key string) string {
+	prefix := key + "="
+	for _, field := range strings.Fields(cmdline) {
+		if strings.HasPrefix(field, prefix) {
+			return strings.TrimPrefix(field, prefix)
+		}
+	}
+	return ""
+}
+
 func findRootHash() string {
 	data, err := os.ReadFile("/proc/cmdline")
 	if err != nil {
 		return ""
 	}
-	for _, field := range strings.Fields(string(data)) {
-		if strings.HasPrefix(field, "ATOM_ROOT_HASH=") {
-			return strings.TrimPrefix(field, "ATOM_ROOT_HASH=")
-		}
+	return cmdlineValue(string(data), "ATOM_ROOT_HASH")
+}
+
+// firmwareRootHash returns the dm-verity root hash the firmware add-on image must
+// match, taken from the signed kernel cmdline (ATOM_FIRMWARE_HASH), or "" when no
+// firmware track is in play.
+func firmwareRootHash() string {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return ""
 	}
-	return ""
+	return cmdlineValue(string(data), "ATOM_FIRMWARE_HASH")
 }
 
 func devCandidates() []string {
@@ -222,6 +240,17 @@ func setupVerity(sysMount string) string {
 	}
 	fmt.Printf("[init] root_hash: %s\n", rootHash)
 
+	// Bootloader-unlock escape hatch: a device the owner deliberately unlocked in
+	// recovery has its verity toggle turned off in the TPM. Honor that here, but
+	// ONLY when the TPM asserts BOTH facts (lock bit unlocked AND verity off). This
+	// is the single path that skips verity with a hash present, so it fails closed:
+	// a missing sintykey, an unreachable TPM, or either fact reading locked/on keeps
+	// full dm-verity enforcement.
+	if verityDisabledByUnlock() {
+		fmt.Println("[init] device is UNLOCKED (verity off in TPM); mounting rootfs without dm-verity")
+		return dataLoop
+	}
+
 	if _, err := os.Stat("/sbin/veritysetup"); err != nil {
 		fmt.Println("[init] veritysetup missing, mounting unverified")
 		return dataLoop
@@ -248,6 +277,138 @@ func setupVerity(sysMount string) string {
 	}
 	fmt.Printf("[init] dm-verity active on %s\n", verityDev)
 	return verityDev
+}
+
+// sintykeyBinPath finds the crypto CLI that reads the TPM lock bit and verity
+// toggle. If it is not in the initramfs, the reads below fail and the caller stays
+// fully verity-enforced (fail closed).
+func sintykeyBinPath() string {
+	for _, p := range []string{"/sbin/sintykey", "/bin/sintykey", "/usr/bin/sintykey"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "sintykey"
+}
+
+// verityDisabledByUnlock reports whether this device was deliberately unlocked in
+// recovery and therefore boots without dm-verity. It reads two independent facts
+// from the TPM via sintykey and defers the decision to unlockGrantsNoVerity, which
+// fails closed.
+func verityDisabledByUnlock() bool {
+	bin := sintykeyBinPath()
+	lockOut, lockErr := exec.Command(bin, "lock-state").Output()
+	verOut, verErr := exec.Command(bin, "verity-state").Output()
+	return unlockGrantsNoVerity(string(lockOut), lockErr, string(verOut), verErr)
+}
+
+// unlockGrantsNoVerity is the pure fail-closed rule, isolated so it is unit-testable
+// without a TPM. Skipping dm-verity is permitted ONLY when both sintykey reads
+// succeeded and explicitly reported the device unlocked (locked=false) AND its
+// verity toggle off (verity=off). Any read error, or either fact reading
+// locked/on, keeps verity enforced.
+func unlockGrantsNoVerity(lockOut string, lockErr error, verOut string, verErr error) bool {
+	if lockErr != nil || verErr != nil {
+		return false
+	}
+	return strings.Contains(lockOut, "locked=false") && strings.Contains(verOut, "verity=off")
+}
+
+// mountFirmware unions the optional signed firmware add-on image over the base
+// firmware in the new root, before switch_root, so the kernel finds hardware
+// firmware for the devices udev probes in the real system. It NEVER blocks boot:
+// the survival firmware (wifi, display) is baked into the rootfs and stays visible
+// underneath, so a missing, unverifiable, or unmountable firmware image degrades
+// to base-only and the system still boots. A failed firmware update must never
+// brick recovery.
+//
+// The lower layers are kept under the writable, persistent /var (they become
+// /var/.firmware-* in the new root) so the overlay survives switch_root and is
+// not shadowed: the read-only erofs rootfs cannot host mkdir'd mountpoints, and
+// /run gets overmounted by a tmpfs after switch_root, which would hide them.
+// The loop devices hold their backing files open even once /boot is gone.
+func mountFirmware(rootMount, sysMount string) {
+	img := sysMount + "/boot/firmware/firmware-active.img"
+	hashFile := sysMount + "/boot/firmware/firmware-active.hash"
+	if _, err := os.Stat(img); err != nil {
+		return // no firmware track: the base survival firmware is enough
+	}
+
+	var loops []string
+	verityOpen := false
+	// A degraded firmware boot must not carry a dangling loop device or dm-verity
+	// mapper across switch_root; the base survival firmware still boots without it.
+	cleanup := func() {
+		if verityOpen {
+			exec.Command("/sbin/veritysetup", "close", "atom-fw-verity").Run()
+		}
+		bin := losetupBin()
+		for _, l := range loops {
+			exec.Command(bin, "-d", l).Run()
+		}
+	}
+
+	dataLoop := loopAttach(img)
+	if dataLoop == "" {
+		fmt.Fprintln(os.Stderr, "[init] firmware image attach failed, using base firmware")
+		return
+	}
+	loops = append(loops, dataLoop)
+	dev := dataLoop
+
+	// Verify the image against the signed cmdline hash. A mismatch means a
+	// tampered or corrupt firmware image: do NOT mount it, but do NOT brick.
+	if fwHash := firmwareRootHash(); fwHash != "" && fwHash != "pending" {
+		if _, err := os.Stat("/sbin/veritysetup"); err == nil {
+			hashLoop := loopAttach(hashFile)
+			if hashLoop == "" {
+				fmt.Fprintln(os.Stderr, "[init] firmware hash device attach failed, using base firmware")
+				cleanup()
+				return
+			}
+			loops = append(loops, hashLoop)
+			cmd := exec.Command("/sbin/veritysetup", "open", dataLoop, "atom-fw-verity", hashLoop, fwHash)
+			cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/lib")
+			if o, err := cmd.CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "[init] firmware verity failed (%v %s), using base firmware\n",
+					err, strings.TrimSpace(string(o)))
+				cleanup()
+				return
+			}
+			verityOpen = true
+			dev = "/dev/mapper/atom-fw-verity"
+			fmt.Println("[init] dm-verity active on firmware image")
+		}
+	}
+
+	imgMount := rootMount + "/var/.firmware-img"
+	baseSaved := rootMount + "/var/.base-firmware"
+	base := rootMount + "/usr/lib/firmware"
+	os.MkdirAll(imgMount, 0755)
+	os.MkdirAll(baseSaved, 0755)
+	if syscall.Mount(dev, imgMount, "erofs", syscall.MS_RDONLY, "") != nil {
+		fmt.Fprintln(os.Stderr, "[init] firmware image mount failed, using base firmware")
+		cleanup()
+		return
+	}
+	// Capture the base firmware as a lower layer so it stays visible under the
+	// add-on rather than being hidden by the overlay mounted on the same path.
+	if syscall.Mount(base, baseSaved, "", syscall.MS_BIND, "") != nil {
+		fmt.Fprintln(os.Stderr, "[init] firmware base bind failed, using base firmware")
+		syscall.Unmount(imgMount, 0)
+		cleanup()
+		return
+	}
+	// Read-only union: the add-on takes precedence, the base is the fallback.
+	opts := "lowerdir=" + imgMount + ":" + baseSaved
+	if syscall.Mount("overlay", base, "overlay", syscall.MS_RDONLY, opts) != nil {
+		fmt.Fprintln(os.Stderr, "[init] firmware overlay failed, using base firmware")
+		syscall.Unmount(baseSaved, 0)
+		syscall.Unmount(imgMount, 0)
+		cleanup()
+		return
+	}
+	fmt.Println("[init] firmware add-on unioned over base firmware in /usr/lib/firmware")
 }
 
 // mountVar mounts the persistent /var, but ONLY from a partition on the SAME
@@ -387,6 +548,11 @@ func main() {
 	} else {
 		fmt.Println("[init] bind mounted /var/home to /home")
 	}
+
+	// Union the signed firmware add-on over the base firmware before switch_root,
+	// so udev finds it when it probes hardware in the real system. Never blocks
+	// boot: absent or bad firmware degrades to the base survival set.
+	mountFirmware(rootMount, sysMount)
 
 	for _, m := range []string{"/dev", "/proc", "/sys"} {
 		target := rootMount + m
