@@ -52,3 +52,14 @@ func TestReadSkipsMalformed(t *testing.T) {
 		t.Fatalf("got %d events, want 2 (malformed skipped)", len(ev))
 	}
 }
+
+func TestAppendCreatesParentDir(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "log", "atom", "history.jsonl")
+	if err := Append(p, "stage", "v2", fixedClock(1)); err != nil {
+		t.Fatalf("Append into missing parent dir: %v", err)
+	}
+	evs, err := Read(p)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("Read after Append: n=%d err=%v, want 1 nil", len(evs), err)
+	}
+}

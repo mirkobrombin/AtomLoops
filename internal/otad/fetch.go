@@ -16,7 +16,7 @@ import (
 // fetchClient is the retrying HTTP client for pulling manifests and artifacts.
 // go-foundation's httpx wraps net/http with retry (transport errors) + an optional
 // circuit breaker, so a flaky mirror does not abort an update. This is the
-// service tier: unlike sinit (zero-dep, syscall-level), the OTA daemon is a
+// service tier: unlike a minimal, zero-dependency PID 1, the OTA daemon is a
 // network service and leans on go-foundation for exactly this.
 func fetchClient() *httpx.Client {
 	return httpx.New(&http.Client{Timeout: 60 * time.Second}).

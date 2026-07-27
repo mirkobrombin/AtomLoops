@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -48,6 +49,9 @@ func (f FileCounter) Advance(to uint64) error {
 		return nil // monotonic: never regress
 	}
 	tmp := f.Path + ".tmp"
+	if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
+		return err
+	}
 	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(to, 10)), 0o600); err != nil {
 		return err
 	}

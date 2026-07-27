@@ -109,3 +109,14 @@ func TestCommandCounter(t *testing.T) {
 		t.Errorf("counter regressed to %d", v)
 	}
 }
+
+func TestFileCounterAdvanceCreatesParentDir(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "lib", "atom", "anti-rollback")
+	c := FileCounter{Path: p}
+	if err := c.Advance(7); err != nil {
+		t.Fatalf("Advance into missing parent dir: %v", err)
+	}
+	if v, err := c.Read(); err != nil || v != 7 {
+		t.Fatalf("Read after Advance: v=%d err=%v, want 7 nil", v, err)
+	}
+}

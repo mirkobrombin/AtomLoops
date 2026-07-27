@@ -2,7 +2,7 @@
 // deployment.json WAL protocol. It records good boots (greenboot-style boot
 // success gated on health checks), promotes a candidate to last_known_good once
 // it stabilizes, and exposes deploy/rollback/status verbs over the WAL. It runs
-// as a service under the init (sinit); it never runs as PID 1 itself.
+// as a service under the init system; it never runs as PID 1 itself.
 //
 // The initramfs half (pick target, decrement boot_attempts, roll back on a spent
 // budget) lives in the early-boot engine and shares the deployment package.
@@ -182,6 +182,69 @@ func Deploy(walPath, version string) (string, error) {
 		version, d.RootFS.BootAttempts), nil
 }
 
+// FirmwareBootConfirm advances the firmware track on the independent OTA cadence,
+// separate from the rootfs BootSuccess path. probeOK is the daemon's device-probe
+// result: whether the freshly-booted firmware actually bound its hardware. A failed
+// probe rolls the firmware image, hash and anchor back to the previous good slot (the
+// base survival firmware kept the device usable meanwhile); a clean probe records a
+// good boot and, once the stable threshold is met, finalizes by dropping the backups.
+// The on-disk slot ops mirror the WAL transitions so the two never diverge.
+func FirmwareBootConfirm(walPath string, dirs StageDirs, bundle string, probeOK bool) (string, error) {
+	d, err := deployment.Load(walPath)
+	if err != nil {
+		return "", err
+	}
+	if !d.HasPendingFirmware(bundle) {
+		return fmt.Sprintf("firmware bundle %q: no candidate in flight", bundle), nil
+	}
+	bdir := filepath.Join(dirs.Firmware, bundle)
+	if !probeOK {
+		d.RollbackFirmware(bundle)
+		if err := d.Save(walPath); err != nil {
+			return "", err
+		}
+		if err := RollbackFirmwareSlot(bdir); err != nil {
+			return "", fmt.Errorf("firmware bundle %q WAL rolled back but slot restore failed: %w", bundle, err)
+		}
+		return fmt.Sprintf("firmware bundle %q failed device-probe, rolled back to previous firmware", bundle), nil
+	}
+	promoted := d.RecordFirmwareProbe(bundle)
+	if err := d.Save(walPath); err != nil {
+		return "", err
+	}
+	if promoted {
+		if err := FinalizeFirmwareSlot(bdir); err != nil {
+			return "", fmt.Errorf("firmware bundle %q promoted but dropping backups failed: %w", bundle, err)
+		}
+		return fmt.Sprintf("firmware bundle %q promoted to last known good", bundle), nil
+	}
+	return fmt.Sprintf("firmware bundle %q good probe recorded (not yet at stable threshold)", bundle), nil
+}
+
+// FirmwareBootConfirmAll applies the same device-probe result to every bundle with a
+// candidate in flight, for a coarse v1 probe that cannot tell bundles apart (e.g. "any
+// firmware overlay mounted"). It returns a joined summary; the first error stops it.
+func FirmwareBootConfirmAll(walPath string, dirs StageDirs, probeOK bool) (string, error) {
+	d, err := deployment.Load(walPath)
+	if err != nil {
+		return "", err
+	}
+	pending := d.PendingFirmwareBundles()
+	if len(pending) == 0 {
+		return "no firmware candidate in flight", nil
+	}
+	sort.Strings(pending)
+	var msgs []string
+	for _, name := range pending {
+		msg, err := FirmwareBootConfirm(walPath, dirs, name, probeOK)
+		if err != nil {
+			return "", err
+		}
+		msgs = append(msgs, msg)
+	}
+	return strings.Join(msgs, "; "), nil
+}
+
 // Rollback abandons any candidate and returns to last_known_good.
 func Rollback(walPath string, dirs StageDirs) (string, error) {
 	d, err := deployment.Load(walPath)
@@ -216,5 +279,23 @@ func Status(walPath string) (string, error) {
 	fmt.Fprintf(&b, "recovery:        %s\n", d.Recovery.Version)
 	fmt.Fprintf(&b, "security level:  L%d\n", d.Security.Level)
 	fmt.Fprintf(&b, "anti-rollback:   %s counter=%d", d.AntiRollback.Hardware, d.AntiRollback.CounterValue)
+	if len(d.Firmware.Bundles) == 0 {
+		fmt.Fprintf(&b, "\nfirmware:        none")
+		return b.String(), nil
+	}
+	names := make([]string, 0, len(d.Firmware.Bundles))
+	for name := range d.Firmware.Bundles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fw := d.Firmware.Bundles[name]
+		if d.HasPendingFirmware(name) {
+			fmt.Fprintf(&b, "\nfirmware[%s]:    current v%d, pending v%d (probes %d/%d)",
+				name, fw.CurrentVersion, fw.PendingVersion, fw.ProbeConfirms, fw.StableThreshold)
+		} else {
+			fmt.Fprintf(&b, "\nfirmware[%s]:    current v%d (no candidate)", name, fw.CurrentVersion)
+		}
+	}
 	return b.String(), nil
 }

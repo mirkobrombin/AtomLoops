@@ -96,7 +96,23 @@ func hashFile(path string) (string, error) {
 // writes a manifest.json (indented) describing the update. minVersion is the
 // anti-rollback floor the update declares. Returns the path written. Sign the
 // result with SignManifest before publishing.
-func BuildManifest(outPath, version, minVersion, rootfsFile, rootfsURL, kcFile, kcURL string) (string, error) {
+// FirmwareSpec describes one firmware add-on bundle to fold into a manifest.
+// ImageFile/HashTreeFile are hashed locally for the pre-install integrity checks;
+// VerityHash is the dm-verity root hash veritysetup printed when the image was built.
+// Name identifies the bundle (e.g. "intel-wifi-modern"); Chips/KernelMin/KernelMax
+// carry hardware-selection and kernel-compatibility metadata.
+type FirmwareSpec struct {
+	Name                      string
+	Version, MinVersion       int
+	ImageFile, ImageURL       string
+	VerityHash                string
+	HashTreeFile, HashTreeURL string
+	Chips                     []string
+	KernelMin, KernelMax      string
+	CriticalDevices           []string
+}
+
+func BuildManifest(outPath, version, minVersion, rootfsFile, rootfsURL, kcFile, kcURL string, fw ...FirmwareSpec) (string, error) {
 	rh, err := hashFile(rootfsFile)
 	if err != nil {
 		return "", fmt.Errorf("hash rootfs: %w", err)
@@ -112,6 +128,44 @@ func BuildManifest(outPath, version, minVersion, rootfsFile, rootfsURL, kcFile, 
 		RootFSHash:      rh,
 		KernelcacheURL:  kcURL,
 		KernelcacheHash: kh,
+	}
+	// A single unnamed bundle uses the legacy single-firmware fields (back-compat);
+	// any named or multiple bundles use the firmware_bundles array.
+	if len(fw) == 1 && fw[0].Name == "" {
+		f := fw[0]
+		fih, err := hashFile(f.ImageFile)
+		if err != nil {
+			return "", fmt.Errorf("hash firmware image: %w", err)
+		}
+		fhh, err := hashFile(f.HashTreeFile)
+		if err != nil {
+			return "", fmt.Errorf("hash firmware hash tree: %w", err)
+		}
+		m.FirmwareURL = f.ImageURL
+		m.FirmwareHash = fih
+		m.FirmwareVerityHash = f.VerityHash
+		m.FirmwareHashTreeURL = f.HashTreeURL
+		m.FirmwareHashTreeHash = fhh
+		m.FirmwareVersion = f.Version
+		m.FirmwareMinVersion = f.MinVersion
+	} else {
+		for _, f := range fw {
+			fih, err := hashFile(f.ImageFile)
+			if err != nil {
+				return "", fmt.Errorf("hash firmware bundle %q image: %w", f.Name, err)
+			}
+			fhh, err := hashFile(f.HashTreeFile)
+			if err != nil {
+				return "", fmt.Errorf("hash firmware bundle %q hash tree: %w", f.Name, err)
+			}
+			m.FirmwareBundles = append(m.FirmwareBundles, otad.FirmwareBundleSpec{
+				Name: f.Name, URL: f.ImageURL, Hash: fih,
+				VerityHash: f.VerityHash, HashTreeURL: f.HashTreeURL, HashTreeHash: fhh,
+				Version: f.Version, MinVersion: f.MinVersion,
+				Chips: f.Chips, KernelMin: f.KernelMin, KernelMax: f.KernelMax,
+				CriticalDevices: f.CriticalDevices,
+			})
+		}
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

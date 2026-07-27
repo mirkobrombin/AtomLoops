@@ -70,8 +70,9 @@ func main() {
 		wal := fs.String("wal", "/var/lib/atom/deployment.json", "deployment WAL path")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot staging dir")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
+		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
 		fs.Parse(os.Args[2:])
-		serve(cfg{*feed, *sock, *cur, *interval, *wal, *rootfsDir, *espDir})
+		serve(cfg{feed: *feed, sock: *sock, current: *cur, interval: *interval, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir})
 	default:
 		fmt.Fprintln(os.Stderr, "usage: updated check|serve ...")
 		os.Exit(2)
@@ -191,6 +192,7 @@ type cfg struct {
 	feed, sock, current    string
 	interval               time.Duration
 	wal, rootfsDir, espDir string
+	firmwareDir            string
 }
 
 // stage fetches + verifies + stages the candidate via otad.Stage, which arms the ESP
@@ -200,7 +202,7 @@ func stage(c cfg, onProgress otad.ProgressFunc) (string, error) {
 	defer cancel()
 	ctx = otad.WithProgress(ctx, onProgress)
 	return otad.Stage(ctx, c.wal, strings.TrimRight(c.feed, "/")+"/manifest.json", "", rootPub,
-		otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir})
+		otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir, Firmware: c.firmwareDir})
 }
 
 // serve polls the feed and serves the Status over the unix socket for the desktop UI

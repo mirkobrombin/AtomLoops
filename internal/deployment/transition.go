@@ -49,6 +49,7 @@ func New(deviceID, rootfsVersion string) *Deployment {
 			StableThreshold: 3,
 			Format:          "uki",
 		},
+		Firmware:      Firmware{Bundles: map[string]*FirmwareBundle{}},
 		AntiRollback:  AntiRollback{Hardware: "none"},
 		OrphanHomes:   []string{},
 		RecoveryEntry: "recovery",
@@ -110,6 +111,102 @@ func (d *Deployment) promote() {
 	// faulty update can never move the hardware anti-rollback floor.
 	d.AntiRollback.CounterValue = d.Kernelcache.CurrentVersion
 	d.AntiRollback.LastUpdated = timestamp()
+}
+
+// --- Firmware track (independent of rootfs/kernelcache) ---
+
+// HasPendingFirmware reports whether the named firmware bundle has a candidate in
+// flight. An unknown bundle has none.
+func (d *Deployment) HasPendingFirmware(bundle string) bool {
+	b, ok := d.Firmware.Bundles[bundle]
+	return ok && b.State == KCUpdating && b.PendingVersion != 0
+}
+
+// HasAnyPendingFirmware reports whether any firmware bundle has a candidate in flight.
+func (d *Deployment) HasAnyPendingFirmware() bool {
+	for name := range d.Firmware.Bundles {
+		if d.HasPendingFirmware(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// PendingFirmwareBundles returns the names of bundles with a candidate in flight.
+func (d *Deployment) PendingFirmwareBundles() []string {
+	var out []string
+	for name := range d.Firmware.Bundles {
+		if d.HasPendingFirmware(name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// DeployFirmware stages a signed firmware image as a candidate for the named bundle.
+// It refuses a version at or below that bundle's anti-rollback floor, so a downgrade
+// can never be staged; it does not change current until the device probes clean
+// (RecordFirmwareProbe). Returns false when the version is refused.
+func (d *Deployment) DeployFirmware(bundle string, version int, hash string) bool {
+	b := d.Firmware.Bundle(bundle)
+	if version <= b.MinVersion {
+		return false
+	}
+	b.PendingVersion = version
+	b.PendingHash = hash
+	b.State = KCUpdating
+	b.ProbeConfirms = 0
+	return true
+}
+
+// RecordFirmwareProbe is the per-bundle firmware health gate: the daemon calls it
+// when the kernel confirms the hardware probed clean with the candidate bundle. On
+// the first clean probe it records the switch; at stable_threshold confirmations it
+// promotes the candidate and only then advances that bundle's anti-rollback floor.
+// Returns true on the promoting call.
+func (d *Deployment) RecordFirmwareProbe(bundle string) (promoted bool) {
+	if !d.HasPendingFirmware(bundle) {
+		return false
+	}
+	b := d.Firmware.Bundle(bundle)
+	if b.CurrentVersion != b.PendingVersion {
+		b.CurrentVersion = b.PendingVersion
+	}
+	b.ProbeConfirms++
+	if b.ProbeConfirms >= b.StableThreshold {
+		d.promoteFirmware(bundle)
+		return true
+	}
+	return false
+}
+
+func (d *Deployment) promoteFirmware(bundle string) {
+	b := d.Firmware.Bundle(bundle)
+	b.LastKnownGood = b.CurrentVersion
+	// The anti-rollback floor advances only here, after the bundle has probed clean
+	// stable_threshold times, so a firmware that never binds the hardware can never
+	// raise the floor and lock out a good version.
+	b.MinVersion = b.CurrentVersion
+	b.PendingVersion = 0
+	b.PendingHash = ""
+	b.ProbeConfirms = 0
+	b.State = KCStable
+	b.LastUpdated = timestamp()
+}
+
+// RollbackFirmware abandons the named bundle's candidate and returns it to its last
+// known good version. A failed firmware update never bricks the device: the survival
+// firmware for wifi and display lives in the immutable base, so recovery stays
+// reachable regardless of this track.
+func (d *Deployment) RollbackFirmware(bundle string) {
+	b := d.Firmware.Bundle(bundle)
+	if b.LastKnownGood != 0 {
+		b.CurrentVersion = b.LastKnownGood
+	}
+	b.PendingVersion = 0
+	b.PendingHash = ""
+	b.ProbeConfirms = 0
+	b.State = KCStable
 }
 
 // --- Initramfs-side transitions (early boot) ---

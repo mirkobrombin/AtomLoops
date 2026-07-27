@@ -6,6 +6,7 @@ package audit
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -17,14 +18,17 @@ type Event struct {
 	Detail string `json:"detail"`
 }
 
-// Append adds one event to the JSONL log at path (created if missing, parent dirs
-// assumed to exist). now supplies the timestamp; pass time.Now in production. A
-// failed append is returned but is non-fatal to the caller: history is best
-// effort, it must never block an update.
+// Append adds one event to the JSONL log at path, creating the file and its parent
+// directory if missing (a freshly installed /var has neither). now supplies the
+// timestamp; pass time.Now in production. A failed append is returned but is
+// non-fatal to the caller: history is best effort, it must never block an update.
 func Append(path, action, detail string, now func() time.Time) error {
 	e := Event{Time: now().UTC().Format(time.RFC3339), Action: action, Detail: detail}
 	b, err := json.Marshal(e)
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)

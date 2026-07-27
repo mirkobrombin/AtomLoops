@@ -10,3 +10,5 @@ out/
 *.key
 root.key
 /boot
+/fw-verify
+/scripts/boot/boot

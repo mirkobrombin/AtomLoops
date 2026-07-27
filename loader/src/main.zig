@@ -253,6 +253,17 @@ fn writeBootState(root: *File, target_next: bool, trial: bool, attempts: i64) vo
     _ = f.write(content) catch {};
 }
 
+// readUnlockArmed reads the ESP consent flag \EFI\atom\state\unlock-armed (a small
+// JSON {"armed":bool,...} written only by the recovery agent's arm_unlock; the
+// desktop never writes the ESP directly). Missing or unparseable is read as not
+// armed -- fail closed, matching the agent side.
+fn readUnlockArmed(root: *File) bool {
+    const buf = readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\state\\unlock-armed")) orelse return false;
+    defer uefi.pool_allocator.free(buf);
+    const v = valueStart(buf, "\"armed\"") orelse return false;
+    return std.mem.startsWith(u8, buf[v..], "true");
+}
+
 // Minimal EFI_TCG2_PROTOCOL binding (not in std): enough to measure an image into a
 // PCR via HashLogExtendEvent. TCG2 is exposed only when the firmware has a TPM, so
 // locating it is itself the TPM-present test.
@@ -536,13 +547,18 @@ pub fn main() void {
     // trial budget). A pending candidate with attempts left boots -next after we
     // decrement and persist; a spent budget falls back to -active.
     var slot: []const u8 = "kernelcache-active.efi";
+    // The owner-armed bootloader-unlock consent lives beside boot-state on the ESP.
+    // When armed, the wipe+unlock must run in the controlled recovery environment,
+    // so an armed flag routes to the recovery slot just like an explicit request.
+    const unlock_armed = readUnlockArmed(root);
     if (readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\boot-state"))) |b| {
         const st = parseBootState(b);
-        if (st.recovery) {
-            // The OS asked for recovery, or the daemon armed it on NeedsRecovery
-            // (a spent candidate with no good slot to fall back to). Boot the
-            // signed recovery slot: a separate, always-present volume that
-            // survives a dead main.
+        if (st.recovery or unlock_armed) {
+            // The OS asked for recovery, the daemon armed it on NeedsRecovery
+            // (a spent candidate with no good slot to fall back to), or the owner
+            // armed a bootloader unlock. Boot the signed recovery slot: a separate,
+            // always-present volume that survives a dead main.
+            if (unlock_armed) dbg("boot-state: unlock armed\r\n");
             dbg("boot-state: recovery requested\r\n");
             slot = "kernelcache-recovery.efi";
         } else if (st.trial and st.target_next and st.attempts > 0) {
@@ -550,6 +566,9 @@ pub fn main() void {
             slot = "kernelcache-next.efi";
         }
         uefi.pool_allocator.free(b);
+    } else if (unlock_armed) {
+        dbg("no boot-state, unlock armed -> recovery\r\n");
+        slot = "kernelcache-recovery.efi";
     } else {
         puts("no boot-state, defaulting to active\r\n");
     }

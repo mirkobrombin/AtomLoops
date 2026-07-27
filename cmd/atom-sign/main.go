@@ -22,6 +22,64 @@ import (
 
 func main() { os.Exit(run(os.Args[1:])) }
 
+// bundleList is a repeatable --bundle flag; each value is a comma-separated key=val
+// spec, e.g. name=intel-wifi,img=wifi.img,url=https://.../wifi.img,verity=<roothash>,
+// hashtree=wifi.hash,hashtree-url=https://.../wifi.hash,version=3[,chips=iwlwifi|ath].
+type bundleList []signing.FirmwareSpec
+
+func (b *bundleList) String() string { return fmt.Sprintf("%d bundles", len(*b)) }
+
+func (b *bundleList) Set(v string) error {
+	var fw signing.FirmwareSpec
+	for _, kv := range strings.Split(v, ",") {
+		k, val, ok := strings.Cut(kv, "=")
+		if !ok {
+			return fmt.Errorf("bundle field %q is not key=value", kv)
+		}
+		switch strings.TrimSpace(k) {
+		case "name":
+			fw.Name = val
+		case "img", "image":
+			fw.ImageFile = val
+		case "url":
+			fw.ImageURL = val
+		case "verity", "verity-hash":
+			fw.VerityHash = val
+		case "hashtree":
+			fw.HashTreeFile = val
+		case "hashtree-url":
+			fw.HashTreeURL = val
+		case "version":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("bundle version %q: %w", val, err)
+			}
+			fw.Version = n
+		case "min-version":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("bundle min-version %q: %w", val, err)
+			}
+			fw.MinVersion = n
+		case "chips":
+			fw.Chips = strings.Split(val, "|")
+		case "critical", "critical-devices":
+			fw.CriticalDevices = strings.Split(val, "|")
+		case "kernel-min":
+			fw.KernelMin = val
+		case "kernel-max":
+			fw.KernelMax = val
+		default:
+			return fmt.Errorf("unknown bundle field %q", k)
+		}
+	}
+	if fw.Name == "" || fw.ImageFile == "" || fw.ImageURL == "" || fw.Version == 0 {
+		return fmt.Errorf("bundle needs at least name, img, url, version")
+	}
+	*b = append(*b, fw)
+	return nil
+}
+
 func run(args []string) int {
 	if len(args) == 0 {
 		usage()
@@ -111,6 +169,15 @@ func run(args []string) int {
 		rootfsURL := fs.String("rootfs-url", "", "URL the device will fetch the rootfs from")
 		kc := fs.String("kernelcache", "", "kernelcache artifact file")
 		kcURL := fs.String("kc-url", "", "URL the device will fetch the kernelcache from")
+		fwImg := fs.String("firmware", "", "optional firmware add-on image file (erofs)")
+		fwURL := fs.String("firmware-url", "", "URL the device will fetch the firmware image from")
+		fwVerity := fs.String("firmware-verity-hash", "", "dm-verity root hash of the firmware image")
+		fwHashTree := fs.String("firmware-hashtree", "", "firmware dm-verity hash tree file")
+		fwHashTreeURL := fs.String("firmware-hashtree-url", "", "URL the device will fetch the firmware hash tree from")
+		fwVersion := fs.Int("firmware-version", 0, "firmware track version")
+		fwMinVersion := fs.Int("firmware-min-version", 0, "firmware anti-rollback floor")
+		var bundles bundleList
+		fs.Var(&bundles, "bundle", "repeatable multi-bundle spec (name=..,img=..,url=..,verity=..,hashtree=..,hashtree-url=..,version=..); supersedes --firmware")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
@@ -118,7 +185,26 @@ func run(args []string) int {
 			fmt.Fprintln(os.Stderr, "atom-sign manifest: --version, --rootfs, --rootfs-url, --kernelcache, --kc-url required")
 			return 2
 		}
-		p, err := signing.BuildManifest(*out, *version, *minVersion, *rootfs, *rootfsURL, *kc, *kcURL)
+		if len(bundles) > 0 && *fwImg != "" {
+			fmt.Fprintln(os.Stderr, "atom-sign manifest: use --bundle OR the single --firmware flags, not both")
+			return 2
+		}
+		var fwSpec []signing.FirmwareSpec
+		if len(bundles) > 0 {
+			fwSpec = bundles
+		} else if *fwImg != "" {
+			if *fwURL == "" || *fwVerity == "" || *fwHashTree == "" || *fwHashTreeURL == "" || *fwVersion == 0 {
+				fmt.Fprintln(os.Stderr, "atom-sign manifest: --firmware needs --firmware-url, --firmware-verity-hash, --firmware-hashtree, --firmware-hashtree-url, --firmware-version")
+				return 2
+			}
+			fwSpec = []signing.FirmwareSpec{{
+				Version: *fwVersion, MinVersion: *fwMinVersion,
+				ImageFile: *fwImg, ImageURL: *fwURL,
+				VerityHash:   *fwVerity,
+				HashTreeFile: *fwHashTree, HashTreeURL: *fwHashTreeURL,
+			}}
+		}
+		p, err := signing.BuildManifest(*out, *version, *minVersion, *rootfs, *rootfsURL, *kc, *kcURL, fwSpec...)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "atom-sign:", err)
 			return 1

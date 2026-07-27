@@ -13,13 +13,34 @@
 //     promotes a candidate to last_known_good after stable_threshold good boots,
 //     and arms the hardware anti-rollback counter.
 //
-// The init (sinit) never touches this file.
+// The init system never touches this file.
 package deployment
+
+import "encoding/json"
+
+// FirmwareStableThreshold is the default number of clean device-probes a firmware
+// bundle must record before it is promoted to last known good.
+const FirmwareStableThreshold = 3
+
+// Bundle returns the named firmware bundle, creating it (with the default stable
+// threshold, stable state) on first use so callers never dereference a nil bundle.
+func (f *Firmware) Bundle(name string) *FirmwareBundle {
+	if f.Bundles == nil {
+		f.Bundles = map[string]*FirmwareBundle{}
+	}
+	b, ok := f.Bundles[name]
+	if !ok {
+		b = &FirmwareBundle{State: KCStable, StableThreshold: FirmwareStableThreshold}
+		f.Bundles[name] = b
+	}
+	return b
+}
 
 // Deployment is the root of deployment.json (schema A6.1).
 type Deployment struct {
 	RootFS        RootFS       `json:"rootfs"`
 	Kernelcache   Kernelcache  `json:"kernelcache"`
+	Firmware      Firmware     `json:"firmware"`
 	Recovery      Recovery     `json:"recovery"`
 	Security      Security     `json:"security"`
 	AntiRollback  AntiRollback `json:"anti_rollback"`
@@ -37,8 +58,8 @@ type Deployment struct {
 // awaiting its first boot; it is "" (not null in Go) when there is none, matching
 // the PoC initramfs which reads it as a string.
 type RootFS struct {
-	Current         string `json:"current"`
-	Pending         string `json:"pending"`
+	Current string `json:"current"`
+	Pending string `json:"pending"`
 	// PendingHash is the candidate's dm-verity root hash (the value baked into its signed
 	// UKI cmdline as ATOM_ROOT_HASH). The daemon compares it to the hash the init actually
 	// booted so it never confirms a candidate the loader silently fell back away from.
@@ -59,6 +80,58 @@ type Kernelcache struct {
 	StableBoots     int    `json:"stable_boots"`
 	StableThreshold int    `json:"stable_threshold"`
 	Format          string `json:"format"`
+}
+
+// Firmware is the firmware OTA track: a set of independently-versioned, separately
+// signed add-on bundles selected per detected hardware (e.g. "intel-wifi-modern",
+// "amdgpu"), each promoted or rolled back on its own. The survival firmware needed
+// for wifi and display stays in the immutable base (rootfs track), NOT here, so a
+// failed firmware bundle can never brick recovery. Each bundle unions read-only over
+// the base in /usr/lib/firmware.
+type Firmware struct {
+	Bundles map[string]*FirmwareBundle `json:"bundles"`
+}
+
+// FirmwareBundle is one add-on bundle's OTA state, independent of rootfs/kernelcache:
+// its own version, anti-rollback floor and promotion counter. The health gate is
+// earlier and more precise than the rootfs one: the rootfs promotes on good boots
+// (userspace reached its target); a bundle promotes on device-probe confirmations
+// (the kernel bound the hardware with the new firmware). A bundle that never probes
+// clean is rolled back and never advances its anti-rollback floor.
+type FirmwareBundle struct {
+	CurrentVersion  int    `json:"current_version"`
+	PendingVersion  int    `json:"pending_version"`
+	PendingHash     string `json:"pending_hash,omitempty"`
+	State           string `json:"state"`
+	ProbeConfirms   int    `json:"probe_confirms"`
+	StableThreshold int    `json:"stable_threshold"`
+	LastKnownGood   int    `json:"last_known_good"`
+	MinVersion      int    `json:"min_version"`
+	LastUpdated     string `json:"last_updated"`
+}
+
+// UnmarshalJSON accepts both the multi-bundle shape ({"bundles":{...}}) and the
+// legacy single-track shape (scalar fields at the firmware object top level), so an
+// on-disk WAL written before the multi-bundle model still loads: the legacy state is
+// migrated into a bundle named "default".
+func (f *Firmware) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		Bundles map[string]*FirmwareBundle `json:"bundles"`
+		FirmwareBundle
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	if len(raw.Bundles) > 0 {
+		f.Bundles = raw.Bundles
+		return nil
+	}
+	f.Bundles = map[string]*FirmwareBundle{}
+	if raw.State != "" || raw.CurrentVersion != 0 || raw.PendingVersion != 0 {
+		legacy := raw.FirmwareBundle
+		f.Bundles["default"] = &legacy
+	}
+	return nil
 }
 
 // Recovery is the third, root-key-signed image; never replaced by a normal OTA.

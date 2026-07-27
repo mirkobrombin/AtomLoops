@@ -142,11 +142,12 @@ func run(args []string) int {
 		installed := fs.String("installed-marker", defaultInstalledMarker, "path the initramfs writes on an installed system; absent = live, atomd inert")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "where rootfs-next lands")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "where kernelcache-next lands")
+		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "where the firmware add-on track lands")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
 		return runDaemon(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), *auditPath, *manifest, *revocation, *pubkeyPath, *cron, *installed,
-			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir})
+			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir, Firmware: *firmwareDir})
 	case "recover":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
@@ -171,6 +172,7 @@ func run(args []string) int {
 		revocation := fs.String("revocation", "", "root-signed revocation list URL (empty to skip)")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "where rootfs-next lands")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "where kernelcache-next lands")
+		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "where the firmware add-on track lands")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}
@@ -184,7 +186,7 @@ func run(args []string) int {
 			return 1
 		}
 		return report(otad.Stage(context.Background(), *wal, *manifest, *revocation, pubkey,
-			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir}))
+			otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir, Firmware: *firmwareDir}))
 	case "boot-success":
 		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 		wal := fs.String("wal", defaultWAL, "path to deployment.json")
@@ -230,6 +232,25 @@ func run(args []string) int {
 			return 2
 		}
 		return report(otad.Rollback(*wal, otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir}))
+	case "firmware-confirm":
+		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		wal := fs.String("wal", defaultWAL, "path to deployment.json")
+		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware slot dir (holds per-bundle subdirs)")
+		bundle := fs.String("bundle", "", "firmware bundle name to confirm; empty applies to every pending bundle")
+		installed := fs.String("installed-marker", defaultInstalledMarker, "path the initramfs writes on an installed system; absent = live, firmware-confirm is a no-op")
+		probeOK := fs.Bool("probe-ok", false, "true if the device-probe bound the candidate firmware clean; false rolls it back")
+		if err := fs.Parse(rest); err != nil {
+			return 2
+		}
+		if !isInstalled(*installed) {
+			fmt.Printf("atomd: live/uninstalled system (no %s), firmware-confirm is a no-op\n", *installed)
+			return 0
+		}
+		dirs := otad.StageDirs{Firmware: *firmwareDir}
+		if *bundle == "" {
+			return report(otad.FirmwareBootConfirmAll(*wal, dirs, *probeOK))
+		}
+		return report(otad.FirmwareBootConfirm(*wal, dirs, *bundle, *probeOK))
 	case "version", "--version", "-v":
 		fmt.Printf("atomd %s\n", version)
 		return 0
@@ -249,5 +270,5 @@ func report(msg string, err error) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: atomd <init|run|recover|stage|boot-success|status|deploy|rollback|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: atomd <init|run|recover|stage|boot-success|firmware-confirm|status|deploy|rollback|version> [flags]")
 }
