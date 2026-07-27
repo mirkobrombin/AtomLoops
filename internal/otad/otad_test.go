@@ -25,6 +25,26 @@ func newWAL(t *testing.T) string {
 	return path
 }
 
+// confirmBootedIdentity marks the WAL's pending candidate with verity hash h and points
+// the booted-identity check at a cmdline carrying it, so BootSuccess may promote it.
+// Returns the cmdline-path restore func.
+func confirmBootedIdentity(t *testing.T, wal, h string) func() {
+	t.Helper()
+	d, err := deployment.Load(wal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.RootFS.PendingHash = h
+	if err := d.Save(wal); err != nil {
+		t.Fatal(err)
+	}
+	bv := filepath.Join(t.TempDir(), "cmdline")
+	if err := os.WriteFile(bv, []byte("console=ttyS0 ATOM_ROOT_HASH="+h+" ro\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return SetBootedCmdlinePath(bv)
+}
+
 func TestRunHealthChecks(t *testing.T) {
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skip("no /bin/sh")
@@ -56,6 +76,7 @@ func TestBootSuccessPromotes(t *testing.T) {
 	if _, err := Deploy(wal, "v2"); err != nil {
 		t.Fatal(err)
 	}
+	defer confirmBootedIdentity(t, wal, "hash-v2")()
 	health := t.TempDir() // empty => healthy
 
 	// Three good boots promote the candidate.
@@ -76,6 +97,43 @@ func TestBootSuccessPromotes(t *testing.T) {
 	}
 	if d.HasPending() || d.RootFS.Current != "v2" || d.RootFS.LastKnownGood != "v2" {
 		t.Fatalf("WAL not promoted: %+v", d.RootFS)
+	}
+}
+
+// When the booted identity cannot be proven (no ATOM_ROOT_HASH in the cmdline, no
+// pending_hash), promotion must never fire, so the candidate can only roll back.
+func TestBootSuccessUnknownIdentityNeverPromotes(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	wal := newWAL(t)
+	if _, err := Deploy(wal, "v2"); err != nil {
+		t.Fatal(err)
+	}
+	bv := filepath.Join(t.TempDir(), "cmdline")
+	if err := os.WriteFile(bv, []byte("console=ttyS0 ro\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := bootedVersionPath
+	bootedVersionPath = bv
+	defer func() { bootedVersionPath = old }()
+
+	health := t.TempDir()
+	for i := 0; i < 6; i++ {
+		msg, err := BootSuccess(wal, health, nil, StageDirs{})
+		if err != nil {
+			t.Fatalf("BootSuccess %d: %v", i, err)
+		}
+		if strings.Contains(msg, "promoted") {
+			t.Fatalf("boot %d promoted an unverifiable candidate: %q", i, msg)
+		}
+	}
+	d, err := deployment.Load(wal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.RootFS.LastKnownGood == "v2" || d.AntiRollback.CounterValue != 0 {
+		t.Fatalf("unverifiable candidate promoted (brick risk): lkg=%s ctr=%d", d.RootFS.LastKnownGood, d.AntiRollback.CounterValue)
 	}
 }
 

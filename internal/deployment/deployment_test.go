@@ -114,7 +114,7 @@ func TestDeployStabilizePromote(t *testing.T) {
 
 	// Boot 1: initramfs spends an attempt; daemon records the good boot -> switch.
 	d.DecrementBootAttempt()
-	if promoted := d.RecordGoodBoot(); promoted {
+	if promoted := d.RecordGoodBoot(true); promoted {
 		t.Fatal("promoted after 1 good boot, want 3")
 	}
 	if d.RootFS.Current != "v2" || d.RootFS.Rollback != "v1" || d.RootFS.LastKnownGood != "v1" {
@@ -126,9 +126,9 @@ func TestDeployStabilizePromote(t *testing.T) {
 
 	// Boots 2 and 3.
 	d.DecrementBootAttempt()
-	d.RecordGoodBoot()
+	d.RecordGoodBoot(true)
 	d.DecrementBootAttempt()
-	if promoted := d.RecordGoodBoot(); !promoted {
+	if promoted := d.RecordGoodBoot(true); !promoted {
 		t.Fatal("not promoted after 3 good boots")
 	}
 	if d.HasPending() || d.RootFS.LastKnownGood != "v2" || d.Kernelcache.State != KCStable {
@@ -142,13 +142,35 @@ func TestDeployStabilizePromote(t *testing.T) {
 	}
 }
 
+func TestUnconfirmedIdentityNeverPromotes(t *testing.T) {
+	d := New("dev-1", "v1")
+	d.Deploy("v2")
+	// Good boots past the threshold but identity never confirmed: the reversible switch
+	// happens, promotion (the irreversible anti-rollback advance) must not.
+	for i := 0; i < d.Kernelcache.StableThreshold+2; i++ {
+		d.DecrementBootAttempt()
+		if promoted := d.RecordGoodBoot(false); promoted {
+			t.Fatalf("promoted with unconfirmed identity at boot %d", i+1)
+		}
+	}
+	if !d.HasPending() {
+		t.Fatal("pending cleared (promoted) without identity confirmation")
+	}
+	if d.RootFS.LastKnownGood != "v1" {
+		t.Errorf("last_known_good advanced to %s without confirmation", d.RootFS.LastKnownGood)
+	}
+	if d.AntiRollback.CounterValue != 0 {
+		t.Errorf("anti-rollback counter advanced to %d without confirmation (brick risk)", d.AntiRollback.CounterValue)
+	}
+}
+
 func TestFailedCandidateRollsBack(t *testing.T) {
 	d := New("dev-1", "v1")
 	d.Deploy("v2")
 
 	// One good boot switches to v2 (kernelcache 1 -> 2), then it starts failing.
 	d.DecrementBootAttempt()
-	d.RecordGoodBoot()
+	d.RecordGoodBoot(true)
 	if d.RootFS.Current != "v2" || d.Kernelcache.CurrentVersion != 2 {
 		t.Fatalf("switch wrong: current=%s kc=%d", d.RootFS.Current, d.Kernelcache.CurrentVersion)
 	}

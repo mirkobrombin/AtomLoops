@@ -74,14 +74,12 @@ func (d *Deployment) Deploy(rootfsVersion string) {
 	d.Kernelcache.StableBoots = 0
 }
 
-// RecordGoodBoot is called by the daemon once the running system passes its
-// health gate. On the candidate's first good boot it records the switch
-// (current <- pending, rollback <- old current); every good boot refreshes the
-// boot budget and advances stable_boots; at stable_threshold it promotes the
-// candidate to last_known_good, disarms rollback, and arms the anti-rollback
-// counter. Returns true on the boot that performs the promotion. No-op (false)
-// on a stable system with no candidate in flight.
-func (d *Deployment) RecordGoodBoot() (promoted bool) {
+// RecordGoodBoot records a candidate's good boot: the first performs the switch
+// (current <- pending), each refreshes the budget and advances stable_boots. At
+// stable_threshold it promotes -- but only when identityConfirmed (the booted verity
+// hash matches pending_hash), since promotion advances the irreversible anti-rollback
+// floor. An unconfirmed candidate never promotes and rolls back on budget exhaustion.
+func (d *Deployment) RecordGoodBoot(identityConfirmed bool) (promoted bool) {
 	if !d.HasPending() {
 		return false
 	}
@@ -92,7 +90,7 @@ func (d *Deployment) RecordGoodBoot() (promoted bool) {
 	}
 	d.Kernelcache.StableBoots++
 	d.RootFS.BootAttempts = d.RootFS.MaxAttempts // a good boot restores the budget
-	if d.Kernelcache.StableBoots >= d.Kernelcache.StableThreshold {
+	if identityConfirmed && d.Kernelcache.StableBoots >= d.Kernelcache.StableThreshold {
 		d.promote()
 		return true
 	}

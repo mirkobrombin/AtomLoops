@@ -35,6 +35,7 @@ func TestBootSuccessArmsCounter(t *testing.T) {
 	if _, err := Deploy(wal, "v2"); err != nil {
 		t.Fatal(err)
 	}
+	defer confirmBootedIdentity(t, wal, "hash-v2")()
 	cnt := FileCounter{Path: filepath.Join(t.TempDir(), "count")}
 	health := t.TempDir()
 	for i := 0; i < 3; i++ {
@@ -68,6 +69,7 @@ func TestBootSuccessReconcilesLaggedCounter(t *testing.T) {
 	if _, err := Deploy(wal, "v2"); err != nil {
 		t.Fatal(err)
 	}
+	defer confirmBootedIdentity(t, wal, "hash-v2")()
 	health := t.TempDir()
 	cnt := &laggingCounter{}
 	for i := 0; i < 3; i++ { // promote v2 -> WAL CounterValue=2, counter armed to 2

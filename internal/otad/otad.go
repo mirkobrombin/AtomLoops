@@ -47,6 +47,15 @@ func Init(walPath, deviceID, rootfsVersion string) (string, error) {
 // BootSuccess cannot reconcile and keeps its prior behaviour).
 var bootedVersionPath = "/proc/cmdline" // overridable in tests
 
+// SetBootedCmdlinePath overrides the file the booted-identity check reads the kernel
+// cmdline from, returning a function that restores the previous value. For tests and
+// diagnostics.
+func SetBootedCmdlinePath(p string) (restore func()) {
+	old := bootedVersionPath
+	bootedVersionPath = p
+	return func() { bootedVersionPath = old }
+}
+
 func bootedVerityHash() string {
 	b, err := os.ReadFile(bootedVersionPath)
 	if err != nil {
@@ -90,7 +99,8 @@ func BootSuccess(walPath, healthDir string, store CounterStore, dirs StageDirs) 
 	// fallback boot of the old-good image would be counted as a "good boot" for the candidate
 	// and eventually promote a DEAD candidate -> brick. Inert until the init writes the marker
 	// (empty running -> old behaviour), active once /run/atom/booted-version is wired.
-	if bh := bootedVerityHash(); bh != "" && d.RootFS.PendingHash != "" && bh != d.RootFS.PendingHash {
+	bh := bootedVerityHash()
+	if bh != "" && d.RootFS.PendingHash != "" && bh != d.RootFS.PendingHash {
 		d.Kernelcache.StableBoots = 0
 		exhausted := d.DecrementBootAttempt()
 		if exhausted {
@@ -103,7 +113,9 @@ func BootSuccess(walPath, healthDir string, store CounterStore, dirs StageDirs) 
 		return fmt.Sprintf("candidate %s did NOT boot (booted verity hash %s != pending %s); failed attempt recorded (exhausted=%v)",
 			cand, bh, d.RootFS.PendingHash, exhausted), nil
 	}
-	promoted := d.RecordGoodBoot()
+	// Gate the irreversible promote on positive identity: booted hash == pending_hash.
+	identityConfirmed := bh != "" && d.RootFS.PendingHash != "" && bh == d.RootFS.PendingHash
+	promoted := d.RecordGoodBoot(identityConfirmed)
 	if err := d.Save(walPath); err != nil {
 		return "", err
 	}

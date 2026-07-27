@@ -81,6 +81,19 @@ func TestReleaseToPromoteEndToEnd(t *testing.T) {
 		t.Fatalf("after stage, pending = %q, want v2", d.RootFS.Pending)
 	}
 
+	// Promotion requires proof the running system is the candidate: point the
+	// booted-identity check at a cmdline carrying the candidate's verity hash.
+	d, _ = deployment.Load(wal)
+	if d.RootFS.PendingHash == "" {
+		d.RootFS.PendingHash = "int-hash-v2"
+		if err := d.Save(wal); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmdline := filepath.Join(dir, "cmdline")
+	os.WriteFile(cmdline, []byte("ATOM_ROOT_HASH="+d.RootFS.PendingHash+"\n"), 0o644)
+	defer otad.SetBootedCmdlinePath(cmdline)()
+
 	// Greenboot the candidate to stability with the hardware counter armed.
 	hw := filepath.Join(dir, "counter")
 	os.WriteFile(hw, []byte("0"), 0o644)

@@ -17,7 +17,7 @@ func walWithCandidate(t *testing.T) string {
 	d.Deploy("v2") // a pending candidate to roll back from
 	// pretend the candidate switched (so current=v2, lkg=v1)
 	d.DecrementBootAttempt()
-	d.RecordGoodBoot()
+	d.RecordGoodBoot(true)
 	if err := d.Save(p); err != nil {
 		t.Fatal(err)
 	}
