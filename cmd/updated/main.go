@@ -1,12 +1,14 @@
-// Command updated is the Sinty OS update agent. It polls the signed update feed
+// Command updated is the Sinty OS update agent. It checks the signed update feed
 // (updates.sinty.dev), verifies the chain root -> signing-cert -> manifest, compares
 // the advertised version against the installed one, and reports a small Status the
 // desktop shell consumes (the dock update icon + the Store "Aggiornamenti" tab) over a
 // local unix socket. Nothing is trusted by transport: a forged feed is rejected by
-// signature, so the manifest may live on any cheap/static host.
+// signature, so the manifest may live on any cheap/static host. A dedicated .timer
+// fires `updated poll`; `updated serve` only surfaces the result over the socket.
 //
-//	updated check  --feed URL [--current V]        one-shot: print the status JSON
-//	updated serve  --feed URL --socket P [--current V] [--interval D]   daemon + API
+//	updated check --feed URL [--current V]              one-shot: print status JSON
+//	updated poll  --feed URL --state P [--no-fetch]     check + fetch + write state
+//	updated serve --feed URL --socket P --state P       socket responder for the UI
 package main
 
 import (
@@ -18,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,20 +64,41 @@ func main() {
 		if st.State == "error" {
 			os.Exit(1)
 		}
-	case "serve":
-		fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	case "poll":
+		fs := flag.NewFlagSet("poll", flag.ExitOnError)
 		feed := fs.String("feed", "https://updates.sinty.dev/stable", "update feed base URL")
-		sock := fs.String("socket", "/run/updated.sock", "unix socket for the UI")
 		cur := fs.String("current", "", "installed version (default: read deployment)")
-		interval := fs.Duration("interval", 6*time.Hour, "poll interval")
+		state := fs.String("state", "/run/updated/status.json", "status file the UI reads")
+		noFetch := fs.Bool("no-fetch", false, "only check; do not download/stage")
 		wal := fs.String("wal", "/var/lib/atom/deployment.json", "deployment WAL path")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot staging dir")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
 		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
 		fs.Parse(os.Args[2:])
-		serve(cfg{feed: *feed, sock: *sock, current: *cur, interval: *interval, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir})
+		c := cfg{feed: *feed, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir}
+		st := pollOnce(c, !*noFetch)
+		if err := writeState(c.state, st); err != nil {
+			fmt.Fprintf(os.Stderr, "updated: write state %s: %v\n", c.state, err)
+		}
+		b, _ := json.MarshalIndent(st, "", "  ")
+		fmt.Println(string(b))
+		if st.State == "error" {
+			os.Exit(1)
+		}
+	case "serve":
+		fs := flag.NewFlagSet("serve", flag.ExitOnError)
+		feed := fs.String("feed", "https://updates.sinty.dev/stable", "update feed base URL")
+		sock := fs.String("socket", "/run/updated.sock", "unix socket for the UI")
+		cur := fs.String("current", "", "installed version (default: read deployment)")
+		state := fs.String("state", "/run/updated/status.json", "status file written by `updated poll`")
+		wal := fs.String("wal", "/var/lib/atom/deployment.json", "deployment WAL path")
+		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot staging dir")
+		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
+		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
+		fs.Parse(os.Args[2:])
+		serve(cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir})
 	default:
-		fmt.Fprintln(os.Stderr, "usage: updated check|serve ...")
+		fmt.Fprintln(os.Stderr, "usage: updated check|poll|serve ...")
 		os.Exit(2)
 	}
 }
@@ -189,10 +213,55 @@ func versionNum(v string) (int, bool) {
 }
 
 type cfg struct {
-	feed, sock, current    string
-	interval               time.Duration
-	wal, rootfsDir, espDir string
-	firmwareDir            string
+	feed, sock, current, state string
+	wal, rootfsDir, espDir     string
+	firmwareDir                string
+}
+
+// pollOnce checks the feed and, when fetch is set and an update is available, stages it
+// so the next reboot boots into it. Returns the resulting Status.
+func pollOnce(c cfg, fetch bool) Status {
+	st := check(c.feed, c.current)
+	if fetch && st.State == "available" {
+		if _, err := stage(c, func(done, total int64) {}); err != nil {
+			return Status{State: "error", Current: st.Current, Latest: st.Latest, Error: err.Error()}
+		}
+		st.State = "ready"
+		st.Percent = 100
+	}
+	return st
+}
+
+// writeState atomically writes the status file (temp + rename). Empty path is a no-op.
+func writeState(path string, s Status) error {
+	if path == "" {
+		return nil
+	}
+	if dir := filepath.Dir(path); dir != "" {
+		os.MkdirAll(dir, 0o755)
+	}
+	b, _ := json.MarshalIndent(s, "", "  ")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// readState reads the status file. ok is false if it is absent or unparseable.
+func readState(path string) (Status, bool) {
+	if path == "" {
+		return Status{}, false
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return Status{}, false
+	}
+	var s Status
+	if json.Unmarshal(b, &s) != nil {
+		return Status{}, false
+	}
+	return s, true
 }
 
 // stage fetches + verifies + stages the candidate via otad.Stage, which arms the ESP
@@ -210,7 +279,20 @@ func stage(c cfg, onProgress otad.ProgressFunc) (string, error) {
 func serve(c cfg) {
 	var mu sync.Mutex
 	latest := check(c.feed, c.current)
-	get := func() Status { mu.Lock(); defer mu.Unlock(); return latest }
+	// The .timer keeps the state file fresh; prefer it, but an in-flight or terminal
+	// in-memory state (a running download) wins.
+	get := func() Status {
+		mu.Lock()
+		defer mu.Unlock()
+		switch latest.State {
+		case "downloading", "ready", "error":
+			return latest
+		}
+		if s, ok := readState(c.state); ok {
+			return s
+		}
+		return latest
+	}
 	set := func(s Status) { mu.Lock(); latest = s; mu.Unlock() }
 	poll := func() {
 		s := check(c.feed, c.current)
@@ -251,14 +333,6 @@ func serve(c cfg) {
 	}
 	os.Chmod(c.sock, 0o660)
 
-	go func() {
-		t := time.NewTicker(c.interval)
-		defer t.Stop()
-		for range t.C {
-			poll()
-		}
-	}()
-
 	writeJSON := func(w http.ResponseWriter, s Status) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(s)
@@ -281,6 +355,6 @@ func serve(c cfg) {
 			syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
 		}()
 	})
-	fmt.Fprintf(os.Stderr, "updated: serving %s (feed %s, poll %s)\n", c.sock, c.feed, c.interval)
+	fmt.Fprintf(os.Stderr, "updated: serving %s (feed %s)\n", c.sock, c.feed)
 	http.Serve(ln, mux)
 }

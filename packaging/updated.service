@@ -1,21 +1,13 @@
 [Unit]
-Description=Sinty OS update agent (checks updates.sinty.dev, stages verified updates)
+Description=Sinty OS update status responder (serves /run/updated.sock for the UI)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 ExecStart=/usr/libexec/updated serve
-# the UI (dock icon + Store tab) reads /run/updated.sock
-RuntimeDirectory=
 Restart=on-failure
 RestartSec=30
-# least privilege: it only fetches to the ESP/rootfs staging dirs and writes the WAL
-NoNewPrivileges=yes
-ProtectSystem=strict
-ReadWritePaths=/boot /var/lib/atom /run
-ProtectHome=yes
-PrivateTmp=yes
 
 [Install]
 WantedBy=graphical.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically check and fetch Sinty OS updates
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=6h
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target
