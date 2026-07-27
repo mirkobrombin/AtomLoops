@@ -49,7 +49,7 @@ type Status struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: updated check|serve ...")
+		fmt.Fprintln(os.Stderr, "usage: updated check|poll|serve ...")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -278,36 +278,29 @@ func stage(c cfg, onProgress otad.ProgressFunc) (string, error) {
 // (the dock update icon + the Store tab), plus /download and /reboot the UI drives.
 func serve(c cfg) {
 	var mu sync.Mutex
-	latest := check(c.feed, c.current)
-	// The .timer keeps the state file fresh; prefer it, but an in-flight or terminal
-	// in-memory state (a running download) wins.
+	// The state file (written by `updated poll`) is the source of truth. In-memory
+	// state matters only while this serve is running a download, which owns the live
+	// percentage; every terminal state comes from the file.
+	var latest Status
 	get := func() Status {
 		mu.Lock()
 		defer mu.Unlock()
-		switch latest.State {
-		case "downloading", "ready", "error":
+		if latest.State == "downloading" {
 			return latest
 		}
 		if s, ok := readState(c.state); ok {
 			return s
 		}
-		return latest
-	}
-	set := func(s Status) { mu.Lock(); latest = s; mu.Unlock() }
-	poll := func() {
-		s := check(c.feed, c.current)
-		mu.Lock()
-		if latest.State != "downloading" && latest.State != "ready" {
-			latest = s // don't clobber an in-flight download
-		}
-		mu.Unlock()
+		return Status{State: "idle"}
 	}
 	download := func() {
 		s := get()
 		if s.State != "available" {
 			return
 		}
-		set(Status{State: "downloading", Current: s.Current, Latest: s.Latest})
+		mu.Lock()
+		latest = Status{State: "downloading", Current: s.Current, Latest: s.Latest}
+		mu.Unlock()
 		onProg := func(done, total int64) {
 			if total <= 0 {
 				return
@@ -318,11 +311,14 @@ func serve(c cfg) {
 			}
 			mu.Unlock()
 		}
+		done := Status{State: "ready", Current: s.Current, Latest: s.Latest, Percent: 100}
 		if _, err := stage(c, onProg); err != nil {
-			set(Status{State: "error", Current: s.Current, Latest: s.Latest, Error: err.Error()})
-			return
+			done = Status{State: "error", Current: s.Current, Latest: s.Latest, Error: err.Error()}
 		}
-		set(Status{State: "ready", Current: s.Current, Latest: s.Latest, Percent: 100})
+		writeState(c.state, done) // publish the terminal state...
+		mu.Lock()
+		latest = Status{} // ...then drop the in-flight state so get() reads the file
+		mu.Unlock()
 	}
 
 	os.Remove(c.sock)
@@ -339,7 +335,11 @@ func serve(c cfg) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, get()) })
-	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) { poll(); writeJSON(w, get()) })
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		st := pollOnce(c, false)
+		writeState(c.state, st)
+		writeJSON(w, st)
+	})
 	mux.HandleFunc("/download", func(w http.ResponseWriter, r *http.Request) {
 		go download()
 		writeJSON(w, get())
