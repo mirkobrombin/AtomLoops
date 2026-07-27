@@ -6,7 +6,8 @@ const File = uefi.protocol.File;
 const cc = uefi.cc;
 
 // Root public key, embedded from src/root.pub (32 raw bytes), same key the daemon
-// uses. Swap the file + rebuild for production; no source edit.
+// uses. The committed file is a dev placeholder; the deployment build injects its
+// real root before compiling. Swap the file + rebuild, no source edit.
 const root_pubkey: [32]u8 = @embedFile("root.pub")[0..32].*;
 comptime {
     if (@embedFile("root.pub").len < 32) @compileError("loader/src/root.pub must be a 32-byte raw Ed25519 public key");

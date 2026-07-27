@@ -33,6 +33,8 @@ import (
 	"github.com/mirkobrombin/atomloops/internal/trust"
 )
 
+// Committed root.pub is a dev placeholder; the deployment build injects its real
+// trust root over this file before compiling (see os atomloops.mk).
 //go:embed root.pub
 var rootPub []byte
 
