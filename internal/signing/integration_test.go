@@ -40,6 +40,8 @@ func TestReleaseToPromoteEndToEnd(t *testing.T) {
 	// --- Release side ---
 	rootfs := blob("rootfs.bin", 4096)
 	kc := blob("kc.bin", 2048)
+	rootfsHT := blob("rootfs.hash", 512)
+	kcSig := blob("kc.bin.sig", 64)
 	priv := filepath.Join(dir, "root.key")
 	pub := filepath.Join(dir, "root.pub")
 	if err := GenerateKeyFiles(priv, pub); err != nil {
@@ -52,7 +54,14 @@ func TestReleaseToPromoteEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := filepath.Join(dir, "manifest.json")
-	if _, err := BuildManifest(manifest, "v2", "v1", rootfs, srv.URL+"/rootfs.bin", kc, srv.URL+"/kc.bin"); err != nil {
+	if _, err := BuildManifest(manifest, ReleaseSpec{
+		Version: "v2", MinVersion: "v1",
+		RootFSFile: rootfs, RootFSURL: srv.URL + "/rootfs.bin",
+		RootFSVerityHash:   "deadbeefcafe",
+		RootFSHashTreeFile: rootfsHT, RootFSHashTreeURL: srv.URL + "/rootfs.hash",
+		KernelcacheFile: kc, KernelcacheURL: srv.URL + "/kc.bin",
+		KernelcacheSigFile: kcSig, KernelcacheSigURL: srv.URL + "/kc.bin.sig",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := SignManifest(signingKey, manifest); err != nil { // signed by the SIGNING key
@@ -116,6 +125,28 @@ func TestReleaseToPromoteEndToEnd(t *testing.T) {
 	if v, _ := counter.Read(); v != 2 {
 		t.Errorf("anti-rollback counter = %d, want 2 (kernelcache version)", v)
 	}
+	// The WAL saying "promoted" is not enough: the boot chain looks for -active files
+	// by name, and each image has to end up beside the material that proves it. A
+	// promote that renames the image but leaves the old hash tree or signature behind
+	// is the shape of brick this asserts against.
+	for _, f := range []string{
+		filepath.Join(dirs.Rootfs, "rootfs-active.erofs"),
+		filepath.Join(dirs.Rootfs, "rootfs-active.hash"),
+		filepath.Join(dirs.ESP, "kernelcache-active.efi"),
+		filepath.Join(dirs.ESP, "kernelcache-active.efi.sig"),
+	} {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("not promoted on disk: %s", f)
+		}
+	}
+	for _, f := range []string{
+		filepath.Join(dirs.Rootfs, "rootfs-next.erofs"),
+		filepath.Join(dirs.ESP, "kernelcache-next.efi.sig"),
+	} {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Errorf("stale -next left after promote: %s", f)
+		}
+	}
 }
 
 // TestFirmwareReleaseToPromoteEndToEnd drives the firmware add-on track through the
@@ -140,6 +171,8 @@ func TestFirmwareReleaseToPromoteEndToEnd(t *testing.T) {
 	// --- Release side: rootfs + kernelcache + a firmware add-on track ---
 	rootfs := blob("rootfs.bin", 4096)
 	kc := blob("kc.bin", 2048)
+	rootfsHT := blob("rootfs.hash", 512)
+	kcSig := blob("kc.bin.sig", 64)
 	fwImg := blob("firmware.img", 8192)
 	fwHashTree := blob("firmware.hash", 1024)
 	const fwVerityHash = "8e557345916c5824e9999845054535e4f27d761c83cdc8ce9c847fc706dc4601"
@@ -161,7 +194,14 @@ func TestFirmwareReleaseToPromoteEndToEnd(t *testing.T) {
 		VerityHash:   fwVerityHash,
 		HashTreeFile: fwHashTree, HashTreeURL: srv.URL + "/firmware.hash",
 	}
-	if _, err := BuildManifest(manifest, "v2", "v1", rootfs, srv.URL+"/rootfs.bin", kc, srv.URL+"/kc.bin", fw); err != nil {
+	if _, err := BuildManifest(manifest, ReleaseSpec{
+		Version: "v2", MinVersion: "v1",
+		RootFSFile: rootfs, RootFSURL: srv.URL + "/rootfs.bin",
+		RootFSVerityHash:   "deadbeefcafe",
+		RootFSHashTreeFile: rootfsHT, RootFSHashTreeURL: srv.URL + "/rootfs.hash",
+		KernelcacheFile: kc, KernelcacheURL: srv.URL + "/kc.bin",
+		KernelcacheSigFile: kcSig, KernelcacheSigURL: srv.URL + "/kc.bin.sig",
+	}, fw); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := SignManifest(signingKey, manifest); err != nil {
@@ -232,6 +272,8 @@ func TestMultiBundleFirmwareEndToEnd(t *testing.T) {
 
 	rootfs := blob("rootfs.bin", 4096)
 	kc := blob("kc.bin", 2048)
+	rootfsHT := blob("rootfs.hash", 512)
+	kcSig := blob("kc.bin.sig", 64)
 	wifiImg, wifiHT := blob("wifi.img", 8192), blob("wifi.hash", 1024)
 	gpuImg, gpuHT := blob("gpu.img", 8192), blob("gpu.hash", 1024)
 
@@ -246,7 +288,14 @@ func TestMultiBundleFirmwareEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := filepath.Join(dir, "manifest.json")
-	if _, err := BuildManifest(manifest, "v2", "v1", rootfs, srv.URL+"/rootfs.bin", kc, srv.URL+"/kc.bin",
+	if _, err := BuildManifest(manifest, ReleaseSpec{
+		Version: "v2", MinVersion: "v1",
+		RootFSFile: rootfs, RootFSURL: srv.URL + "/rootfs.bin",
+		RootFSVerityHash:   "deadbeefcafe",
+		RootFSHashTreeFile: rootfsHT, RootFSHashTreeURL: srv.URL + "/rootfs.hash",
+		KernelcacheFile: kc, KernelcacheURL: srv.URL + "/kc.bin",
+		KernelcacheSigFile: kcSig, KernelcacheSigURL: srv.URL + "/kc.bin.sig",
+	},
 		FirmwareSpec{Name: "intel-wifi-modern", Version: 3, ImageFile: wifiImg, ImageURL: srv.URL + "/wifi.img",
 			VerityHash: "a1b2c3", HashTreeFile: wifiHT, HashTreeURL: srv.URL + "/wifi.hash", Chips: []string{"iwlwifi"}},
 		FirmwareSpec{Name: "amdgpu", Version: 2, ImageFile: gpuImg, ImageURL: srv.URL + "/gpu.img",

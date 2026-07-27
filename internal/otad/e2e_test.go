@@ -41,17 +41,25 @@ func signedFeedV2(t *testing.T, verityHash string) (string, []byte) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rootfs", func(w http.ResponseWriter, r *http.Request) { w.Write(rootfs) })
 	mux.HandleFunc("/kernelcache", func(w http.ResponseWriter, r *http.Request) { w.Write(kernel) })
+	rootfsHashTree := []byte("dm-verity hash tree for rootfs v2")
+	kernelSig := []byte("ed25519 signature over kernelcache v2")
+	mux.HandleFunc("/rootfs-hashtree", func(w http.ResponseWriter, r *http.Request) { w.Write(rootfsHashTree) })
+	mux.HandleFunc("/kernelcache-sig", func(w http.ResponseWriter, r *http.Request) { w.Write(kernelSig) })
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
 	m := Manifest{
-		Version:          "v2",
-		MinVersion:       "v1",
-		RootFSURL:        srv.URL + "/rootfs",
-		RootFSHash:       h(rootfs),
-		RootFSVerityHash: verityHash,
-		KernelcacheURL:   srv.URL + "/kernelcache",
-		KernelcacheHash:  h(kernel),
+		Version:            "v2",
+		MinVersion:         "v1",
+		RootFSURL:          srv.URL + "/rootfs",
+		RootFSHash:         h(rootfs),
+		RootFSVerityHash:   verityHash,
+		KernelcacheURL:     srv.URL + "/kernelcache",
+		KernelcacheHash:    h(kernel),
+		RootFSHashTreeURL:  srv.URL + "/rootfs-hashtree",
+		RootFSHashTreeHash: h(rootfsHashTree),
+		KernelcacheSigURL:  srv.URL + "/kernelcache-sig",
+		KernelcacheSigHash: h(kernelSig),
 	}
 	mData, _ := json.Marshal(m)
 	mSig := ed25519.Sign(signPriv, mData)

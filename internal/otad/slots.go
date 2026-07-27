@@ -116,29 +116,58 @@ func ReadBootState(path string) (BootState, error) {
 	return b, sc.Err()
 }
 
+// slotGroup is a set of files that only mean anything together: an image and the
+// material that proves it. Promoting one without the other is what bricks a device.
+type slotGroup struct {
+	dir      string
+	prefix   string
+	suffixes []string
+}
+
 // PromoteSlots canonicalizes the on-disk slots after a candidate is promoted: the
 // -next artifacts become -active and the old -active becomes -prev (kept for
-// rollback), for both the kernelcache (ESP) and the rootfs. Missing -next files
-// are skipped (a WAL-only deploy with no staged artifacts is a no-op).
+// rollback), for both the kernelcache (ESP) and the rootfs. A group with nothing
+// staged is skipped (a WAL-only deploy is a no-op).
+//
+// Each group moves ALL-OR-NOTHING. A rootfs image is only bootable together with the
+// verity hash tree it was measured into, and a kernelcache only with the signature
+// the loader checks it against: renaming the image while leaving the old hash tree or
+// the old signature in place produces a system that fails verity or fails to chain --
+// a brick, on the reboot the user asked for. So a partially staged group is refused
+// before anything moves, and the device keeps booting what it has.
 func PromoteSlots(dirs StageDirs) error {
-	moves := []struct{ dir, prefix, suffix string }{
-		{dirs.ESP, "kernelcache", ".efi"},
-		{dirs.Rootfs, "rootfs", ".erofs"},
+	groups := []slotGroup{
+		{dirs.ESP, "kernelcache", []string{".efi", ".efi.sig"}},
+		{dirs.Rootfs, "rootfs", []string{".erofs", ".hash"}},
 	}
-	for _, m := range moves {
-		next := filepath.Join(m.dir, m.prefix+"-next"+m.suffix)
-		active := filepath.Join(m.dir, m.prefix+"-active"+m.suffix)
-		prev := filepath.Join(m.dir, m.prefix+"-prev"+m.suffix)
-		if _, err := os.Stat(next); err != nil {
-			continue // nothing staged for this artifact
-		}
-		if _, err := os.Stat(active); err == nil {
-			if err := os.Rename(active, prev); err != nil {
-				return fmt.Errorf("promote: %s active->prev: %w", m.prefix, err)
+	for _, g := range groups {
+		staged, missing := 0, []string(nil)
+		for _, s := range g.suffixes {
+			if _, err := os.Stat(filepath.Join(g.dir, g.prefix+"-next"+s)); err == nil {
+				staged++
+			} else {
+				missing = append(missing, g.prefix+"-next"+s)
 			}
 		}
-		if err := os.Rename(next, active); err != nil {
-			return fmt.Errorf("promote: %s next->active: %w", m.prefix, err)
+		if staged == 0 {
+			continue // nothing staged for this group
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("promote: %s partially staged, missing %v -- refusing (would not boot)",
+				g.prefix, missing)
+		}
+		for _, s := range g.suffixes {
+			next := filepath.Join(g.dir, g.prefix+"-next"+s)
+			active := filepath.Join(g.dir, g.prefix+"-active"+s)
+			prev := filepath.Join(g.dir, g.prefix+"-prev"+s)
+			if _, err := os.Stat(active); err == nil {
+				if err := os.Rename(active, prev); err != nil {
+					return fmt.Errorf("promote: %s%s active->prev: %w", g.prefix, s, err)
+				}
+			}
+			if err := os.Rename(next, active); err != nil {
+				return fmt.Errorf("promote: %s%s next->active: %w", g.prefix, s, err)
+			}
 		}
 	}
 	return nil

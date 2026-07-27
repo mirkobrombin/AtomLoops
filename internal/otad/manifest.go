@@ -28,8 +28,22 @@ type Manifest struct {
 	// file SHA256). It equals the ATOM_ROOT_HASH baked into the candidate's signed UKI cmdline,
 	// and lets the daemon confirm the candidate actually booted. Optional for back-compat.
 	RootFSVerityHash string `json:"rootfs_verity_hash,omitempty"`
-	KernelcacheURL   string `json:"kernelcache_url"`
-	KernelcacheHash  string `json:"kernelcache_hash"`
+	// RootFSHashTreeURL points at the dm-verity hash tree for the rootfs image, the
+	// sidecar veritysetup needs alongside the data device; RootFSHashTreeHash is its
+	// SHA256. The image and its hash tree are only bootable as a pair -- promoting a
+	// new image against the previous hash tree fails verity -- so a candidate is only
+	// promotable when this is staged too. Same contract the firmware track already
+	// follows with FirmwareHashTreeURL.
+	RootFSHashTreeURL  string `json:"rootfs_hashtree_url,omitempty"`
+	RootFSHashTreeHash string `json:"rootfs_hashtree_hash,omitempty"`
+	KernelcacheURL     string `json:"kernelcache_url"`
+	KernelcacheHash    string `json:"kernelcache_hash"`
+	// KernelcacheSigURL is the loader's Ed25519 signature over the kernelcache;
+	// KernelcacheSigHash is its SHA256. The loader refuses to chain a UKI whose
+	// signature does not verify, so a new kernelcache promoted next to the previous
+	// signature halts the boot. Staged and promoted together with the image.
+	KernelcacheSigURL  string `json:"kernelcache_sig_url,omitempty"`
+	KernelcacheSigHash string `json:"kernelcache_sig_hash,omitempty"`
 	// KernelRelease is the kernel version (uname -r) the kernelcache is built for,
 	// e.g. "7.1.3". It lets the daemon couple a kernel change with the matching
 	// kernel-bound driver add-on bundles (see CoupledKernelCheck) so a kernel update

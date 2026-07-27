@@ -30,14 +30,25 @@ func TestPromoteSlots(t *testing.T) {
 	esp := t.TempDir()
 	rfs := t.TempDir()
 	dirs := StageDirs{Rootfs: rfs, ESP: esp}
-	// active + next present for both artifacts
+	// active + next present for every artifact: an image is only promotable together
+	// with the signature/hash tree that makes it bootable.
 	os.WriteFile(filepath.Join(esp, "kernelcache-active.efi"), []byte("kc-active"), 0o644)
 	os.WriteFile(filepath.Join(esp, "kernelcache-next.efi"), []byte("kc-next"), 0o644)
+	os.WriteFile(filepath.Join(esp, "kernelcache-active.efi.sig"), []byte("sig-active"), 0o644)
+	os.WriteFile(filepath.Join(esp, "kernelcache-next.efi.sig"), []byte("sig-next"), 0o644)
 	os.WriteFile(filepath.Join(rfs, "rootfs-active.erofs"), []byte("rfs-active"), 0o644)
 	os.WriteFile(filepath.Join(rfs, "rootfs-next.erofs"), []byte("rfs-next"), 0o644)
+	os.WriteFile(filepath.Join(rfs, "rootfs-active.hash"), []byte("hash-active"), 0o644)
+	os.WriteFile(filepath.Join(rfs, "rootfs-next.hash"), []byte("hash-next"), 0o644)
 
 	if err := PromoteSlots(dirs); err != nil {
 		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(rfs, "rootfs-active.hash")); string(b) != "hash-next" {
+		t.Errorf("rootfs active hash = %q, want hash-next", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(esp, "kernelcache-active.efi.sig")); string(b) != "sig-next" {
+		t.Errorf("kc active sig = %q, want sig-next", b)
 	}
 	// next -> active, old active -> prev
 	if b, _ := os.ReadFile(filepath.Join(esp, "kernelcache-active.efi")); string(b) != "kc-next" {
@@ -51,6 +62,27 @@ func TestPromoteSlots(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(rfs, "rootfs-active.erofs")); string(b) != "rfs-next" {
 		t.Errorf("rootfs active = %q, want rfs-next", b)
+	}
+}
+
+// A rootfs image staged without its verity hash tree must NOT be promoted: the new
+// image against the old hash tree fails dm-verity, and the device powers off instead
+// of booting. Refuse the whole group and leave the running slot untouched.
+func TestPromoteRefusesPartialGroup(t *testing.T) {
+	rfs := t.TempDir()
+	dirs := StageDirs{Rootfs: rfs}
+	os.WriteFile(filepath.Join(rfs, "rootfs-active.erofs"), []byte("rfs-active"), 0o644)
+	os.WriteFile(filepath.Join(rfs, "rootfs-active.hash"), []byte("hash-active"), 0o644)
+	os.WriteFile(filepath.Join(rfs, "rootfs-next.erofs"), []byte("rfs-next"), 0o644)
+
+	if err := PromoteSlots(dirs); err == nil {
+		t.Fatal("promote accepted a rootfs with no staged hash tree")
+	}
+	if b, _ := os.ReadFile(filepath.Join(rfs, "rootfs-active.erofs")); string(b) != "rfs-active" {
+		t.Errorf("active rootfs was mutated by a refused promote: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(rfs, "rootfs-active.hash")); string(b) != "hash-active" {
+		t.Errorf("active hash was mutated by a refused promote: %q", b)
 	}
 }
 

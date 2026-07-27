@@ -169,6 +169,11 @@ func run(args []string) int {
 		rootfsURL := fs.String("rootfs-url", "", "URL the device will fetch the rootfs from")
 		kc := fs.String("kernelcache", "", "kernelcache artifact file")
 		kcURL := fs.String("kc-url", "", "URL the device will fetch the kernelcache from")
+		rootfsVerity := fs.String("rootfs-verity-hash", "", "dm-verity root hash of the rootfs image (as baked in its UKI cmdline)")
+		rootfsHT := fs.String("rootfs-hashtree", "", "rootfs dm-verity hash tree file")
+		rootfsHTURL := fs.String("rootfs-hashtree-url", "", "URL the device will fetch the rootfs hash tree from")
+		kcSig := fs.String("kc-sig", "", "loader signature file for the kernelcache")
+		kcSigURL := fs.String("kc-sig-url", "", "URL the device will fetch the kernelcache signature from")
 		fwImg := fs.String("firmware", "", "optional firmware add-on image file (erofs)")
 		fwURL := fs.String("firmware-url", "", "URL the device will fetch the firmware image from")
 		fwVerity := fs.String("firmware-verity-hash", "", "dm-verity root hash of the firmware image")
@@ -183,6 +188,12 @@ func run(args []string) int {
 		}
 		if *version == "" || *rootfs == "" || *rootfsURL == "" || *kc == "" || *kcURL == "" {
 			fmt.Fprintln(os.Stderr, "atom-sign manifest: --version, --rootfs, --rootfs-url, --kernelcache, --kc-url required")
+			return 2
+		}
+		// An image without its hash tree, or a kernelcache without its signature, is an
+		// update that stages fine and then fails to boot. Refuse to publish one.
+		if *rootfsHT == "" || *rootfsHTURL == "" || *kcSig == "" || *kcSigURL == "" || *rootfsVerity == "" {
+			fmt.Fprintln(os.Stderr, "atom-sign manifest: --rootfs-verity-hash, --rootfs-hashtree, --rootfs-hashtree-url, --kc-sig, --kc-sig-url required")
 			return 2
 		}
 		if len(bundles) > 0 && *fwImg != "" {
@@ -204,7 +215,14 @@ func run(args []string) int {
 				HashTreeFile: *fwHashTree, HashTreeURL: *fwHashTreeURL,
 			}}
 		}
-		p, err := signing.BuildManifest(*out, *version, *minVersion, *rootfs, *rootfsURL, *kc, *kcURL, fwSpec...)
+		p, err := signing.BuildManifest(*out, signing.ReleaseSpec{
+			Version: *version, MinVersion: *minVersion,
+			RootFSFile: *rootfs, RootFSURL: *rootfsURL,
+			RootFSVerityHash:   *rootfsVerity,
+			RootFSHashTreeFile: *rootfsHT, RootFSHashTreeURL: *rootfsHTURL,
+			KernelcacheFile: *kc, KernelcacheURL: *kcURL,
+			KernelcacheSigFile: *kcSig, KernelcacheSigURL: *kcSigURL,
+		}, fwSpec...)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "atom-sign:", err)
 			return 1

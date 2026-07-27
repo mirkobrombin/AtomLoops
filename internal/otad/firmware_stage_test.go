@@ -42,6 +42,10 @@ func TestStageFirmwareTrack(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rootfs", func(w http.ResponseWriter, r *http.Request) { w.Write(rootfs) })
 	mux.HandleFunc("/kernelcache", func(w http.ResponseWriter, r *http.Request) { w.Write(kernel) })
+	rootfsHashTree := []byte("dm-verity hash tree for rootfs v2")
+	kernelSig := []byte("ed25519 signature over kernelcache v2")
+	mux.HandleFunc("/rootfs-hashtree", func(w http.ResponseWriter, r *http.Request) { w.Write(rootfsHashTree) })
+	mux.HandleFunc("/kernelcache-sig", func(w http.ResponseWriter, r *http.Request) { w.Write(kernelSig) })
 	mux.HandleFunc("/firmware", func(w http.ResponseWriter, r *http.Request) { w.Write(firmware) })
 	mux.HandleFunc("/firmware-hashtree", func(w http.ResponseWriter, r *http.Request) { w.Write(firmwareHashTree) })
 	srv := httptest.NewServer(mux)
@@ -54,6 +58,10 @@ func TestStageFirmwareTrack(t *testing.T) {
 		RootFSHash:           sha256hex(rootfs),
 		KernelcacheURL:       srv.URL + "/kernelcache",
 		KernelcacheHash:      sha256hex(kernel),
+		RootFSHashTreeURL:    srv.URL + "/rootfs-hashtree",
+		RootFSHashTreeHash:   sha256hex(rootfsHashTree),
+		KernelcacheSigURL:    srv.URL + "/kernelcache-sig",
+		KernelcacheSigHash:   sha256hex(kernelSig),
 		FirmwareURL:          srv.URL + "/firmware",
 		FirmwareHash:         sha256hex(firmware),
 		FirmwareVerityHash:   "abcdef0123456789",

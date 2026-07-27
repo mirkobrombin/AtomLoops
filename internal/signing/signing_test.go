@@ -62,7 +62,14 @@ func TestBuildManifestRoundTrip(t *testing.T) {
 	os.WriteFile(kc, []byte("UKI bytes v2"), 0o644)
 
 	out := filepath.Join(dir, "manifest.json")
-	if _, err := BuildManifest(out, "v2", "v1", rootfs, "https://x/rootfs", kc, "https://x/kc"); err != nil {
+	if _, err := BuildManifest(out, ReleaseSpec{
+		Version: "v2", MinVersion: "v1",
+		RootFSFile: rootfs, RootFSURL: "https://x/rootfs",
+		RootFSVerityHash:   "deadbeefcafe",
+		RootFSHashTreeFile: rootfs, RootFSHashTreeURL: "https://x/rootfs.hash",
+		KernelcacheFile: kc, KernelcacheURL: "https://x/kc",
+		KernelcacheSigFile: kc, KernelcacheSigURL: "https://x/kc.sig",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(out)

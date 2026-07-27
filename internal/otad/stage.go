@@ -131,6 +131,24 @@ func Stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 		return "", err
 	}
 
+	// 2b. the rootfs hash tree, beside the image it measures. Without it the promoted
+	// image would be checked against the previous tree and fail dm-verity, so a
+	// candidate that does not carry one is refused here rather than at the next boot.
+	if m.RootFSHashTreeURL == "" {
+		os.Remove(rPath)
+		return "", fmt.Errorf("stage: manifest carries no rootfs hash tree -- refusing (candidate would not boot)")
+	}
+	rhPath := filepath.Join(dirs.Rootfs, "rootfs-next.hash")
+	if _, err := FetchTo(ctx, m.RootFSHashTreeURL, rhPath); err != nil {
+		os.Remove(rPath)
+		return "", err
+	}
+	if err := VerifySHA256(rhPath, m.RootFSHashTreeHash); err != nil {
+		os.Remove(rPath)
+		os.Remove(rhPath)
+		return "", err
+	}
+
 	// 3. kernelcache -> ESP/kernelcache-next.efi, verified.
 	if err := os.MkdirAll(dirs.ESP, 0o755); err != nil {
 		return "", err
@@ -141,6 +159,23 @@ func Stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	}
 	if err := VerifySHA256(kPath, m.KernelcacheHash); err != nil {
 		os.Remove(kPath)
+		return "", err
+	}
+
+	// 3b. its loader signature. The loader verifies the UKI before chaining it, so a
+	// kernelcache promoted next to the previous signature halts the boot.
+	if m.KernelcacheSigURL == "" {
+		os.Remove(kPath)
+		return "", fmt.Errorf("stage: manifest carries no kernelcache signature -- refusing (loader would not chain it)")
+	}
+	kSigPath := filepath.Join(dirs.ESP, "kernelcache-next.efi.sig")
+	if _, err := FetchTo(ctx, m.KernelcacheSigURL, kSigPath); err != nil {
+		os.Remove(kPath)
+		return "", err
+	}
+	if err := VerifySHA256(kSigPath, m.KernelcacheSigHash); err != nil {
+		os.Remove(kPath)
+		os.Remove(kSigPath)
 		return "", err
 	}
 

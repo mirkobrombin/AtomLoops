@@ -112,22 +112,67 @@ type FirmwareSpec struct {
 	CriticalDevices           []string
 }
 
-func BuildManifest(outPath, version, minVersion, rootfsFile, rootfsURL, kcFile, kcURL string, fw ...FirmwareSpec) (string, error) {
-	rh, err := hashFile(rootfsFile)
+// ReleaseSpec is everything a release publishes for the rootfs and kernelcache
+// tracks. The hash tree and the signature are not optional extras: a rootfs image
+// is only mountable together with the verity hash tree it was measured into, and a
+// kernelcache is only chainable together with the signature the loader checks. A
+// manifest that advertises one without the other describes an update that cannot
+// boot, so BuildManifest refuses to write it.
+type ReleaseSpec struct {
+	Version, MinVersion string
+
+	RootFSFile, RootFSURL string
+	// RootFSVerityHash is the dm-verity ROOT hash of RootFSFile, the same value baked
+	// into the candidate's signed UKI cmdline. The daemon records it as pending_hash and
+	// only promotes once the running system's cmdline matches it, so a manifest without
+	// it produces an update that stages, boots, and then stays pending forever.
+	RootFSVerityHash string
+	// RootFSHashTreeFile is the veritysetup hash tree for RootFSFile.
+	RootFSHashTreeFile, RootFSHashTreeURL string
+
+	KernelcacheFile, KernelcacheURL string
+	// KernelcacheSigFile is the loader's Ed25519 signature over KernelcacheFile.
+	KernelcacheSigFile, KernelcacheSigURL string
+}
+
+func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, error) {
+	if r.RootFSHashTreeFile == "" || r.RootFSHashTreeURL == "" {
+		return "", fmt.Errorf("manifest: rootfs hash tree missing -- the update could not be verity-mounted after promotion")
+	}
+	if r.KernelcacheSigFile == "" || r.KernelcacheSigURL == "" {
+		return "", fmt.Errorf("manifest: kernelcache signature missing -- the loader could not chain the update")
+	}
+	if r.RootFSVerityHash == "" {
+		return "", fmt.Errorf("manifest: rootfs verity root hash missing -- the update would never be confirmed and never promote")
+	}
+	rh, err := hashFile(r.RootFSFile)
 	if err != nil {
 		return "", fmt.Errorf("hash rootfs: %w", err)
 	}
-	kh, err := hashFile(kcFile)
+	rth, err := hashFile(r.RootFSHashTreeFile)
+	if err != nil {
+		return "", fmt.Errorf("hash rootfs hash tree: %w", err)
+	}
+	kh, err := hashFile(r.KernelcacheFile)
 	if err != nil {
 		return "", fmt.Errorf("hash kernelcache: %w", err)
 	}
+	ksh, err := hashFile(r.KernelcacheSigFile)
+	if err != nil {
+		return "", fmt.Errorf("hash kernelcache signature: %w", err)
+	}
 	m := otad.Manifest{
-		Version:         version,
-		MinVersion:      minVersion,
-		RootFSURL:       rootfsURL,
-		RootFSHash:      rh,
-		KernelcacheURL:  kcURL,
-		KernelcacheHash: kh,
+		Version:            r.Version,
+		MinVersion:         r.MinVersion,
+		RootFSURL:          r.RootFSURL,
+		RootFSHash:         rh,
+		RootFSVerityHash:   r.RootFSVerityHash,
+		RootFSHashTreeURL:  r.RootFSHashTreeURL,
+		RootFSHashTreeHash: rth,
+		KernelcacheURL:     r.KernelcacheURL,
+		KernelcacheHash:    kh,
+		KernelcacheSigURL:  r.KernelcacheSigURL,
+		KernelcacheSigHash: ksh,
 	}
 	// A single unnamed bundle uses the legacy single-firmware fields (back-compat);
 	// any named or multiple bundles use the firmware_bundles array.
