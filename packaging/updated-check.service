@@ -5,4 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# Staging an update downloads the whole root image, which on a slow link runs far past
+# any default start timeout. Being killed mid-fetch surfaces as a failed unit with
+# nothing actually broken, and the update never lands.
+TimeoutStartSec=3600
 ExecStart=/usr/libexec/updated poll
