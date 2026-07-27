@@ -14,9 +14,9 @@ import (
 
 func TestVersionNum(t *testing.T) {
 	cases := []struct {
-		in   string
-		n    int
-		ok   bool
+		in string
+		n  int
+		ok bool
 	}{
 		{"v1", 1, true}, {"v2", 2, true}, {"v10", 10, true},
 		{"2026.07", 7, true}, {"stable-3", 3, true},
@@ -82,6 +82,7 @@ func setupFeed(t *testing.T) (feed string, rootPubBytes []byte) {
 		return p
 	}
 	rootfs, kc := write("rootfs.bin", 4096), write("kc.bin", 2048)
+	rootfsHT, kcSig := write("rootfs.hash", 512), write("kc.bin.sig", 64)
 	rootPriv, rootPubPath := filepath.Join(dir, "root.key"), filepath.Join(dir, "root.pub")
 	if err := signing.GenerateKeyFiles(rootPriv, rootPubPath); err != nil {
 		t.Fatal(err)
@@ -93,7 +94,14 @@ func setupFeed(t *testing.T) (feed string, rootPubBytes []byte) {
 	srv := httptest.NewServer(http.FileServer(http.Dir(dir)))
 	t.Cleanup(srv.Close)
 	manifest := filepath.Join(dir, "manifest.json")
-	if _, err := signing.BuildManifest(manifest, "v2", "v1", rootfs, srv.URL+"/rootfs.bin", kc, srv.URL+"/kc.bin"); err != nil {
+	if _, err := signing.BuildManifest(manifest, signing.ReleaseSpec{
+		Version: "v2", MinVersion: "v1",
+		RootFSFile: rootfs, RootFSURL: srv.URL + "/rootfs.bin",
+		RootFSVerityHash:   "deadbeefcafe",
+		RootFSHashTreeFile: rootfsHT, RootFSHashTreeURL: srv.URL + "/rootfs.hash",
+		KernelcacheFile: kc, KernelcacheURL: srv.URL + "/kc.bin",
+		KernelcacheSigFile: kcSig, KernelcacheSigURL: srv.URL + "/kc.bin.sig",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := signing.SignManifest(signingKey, manifest); err != nil {

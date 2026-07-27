@@ -35,8 +35,15 @@ import (
 
 // Committed root.pub is a dev placeholder; the deployment build injects its real
 // trust root over this file before compiling (see os atomloops.mk).
+//
 //go:embed root.pub
 var rootPub []byte
+
+// defaultWAL is the deployment WAL on the system partition, beside the rootfs slot
+// files it describes. It must stay the same file atomd promotes from and the
+// initramfs reads at boot: a stager writing one WAL and a promoter reading another
+// means a staged update is never seen.
+const defaultWAL = "/boot/rootfs/deployment.json"
 
 // Status is the shape the UI polls. State drives the dock icon:
 // idle (no badge) | available (download badge) | downloading (progress bar) |
@@ -59,8 +66,9 @@ func main() {
 		fs := flag.NewFlagSet("check", flag.ExitOnError)
 		feed := fs.String("feed", "https://updates.sinty.dev/stable", "update feed base URL")
 		cur := fs.String("current", "", "installed version (default: read deployment)")
+		wal := fs.String("wal", defaultWAL, "deployment WAL path")
 		fs.Parse(os.Args[2:])
-		st := check(*feed, *cur)
+		st := check(*feed, *cur, *wal)
 		b, _ := json.MarshalIndent(st, "", "  ")
 		fmt.Println(string(b))
 		if st.State == "error" {
@@ -72,7 +80,7 @@ func main() {
 		cur := fs.String("current", "", "installed version (default: read deployment)")
 		state := fs.String("state", "/run/updated/status.json", "status file the UI reads")
 		noFetch := fs.Bool("no-fetch", false, "only check; do not download/stage")
-		wal := fs.String("wal", "/var/lib/atom/deployment.json", "deployment WAL path")
+		wal := fs.String("wal", defaultWAL, "deployment WAL path")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot staging dir")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
 		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
@@ -93,7 +101,7 @@ func main() {
 		sock := fs.String("socket", "/run/updated.sock", "unix socket for the UI")
 		cur := fs.String("current", "", "installed version (default: read deployment)")
 		state := fs.String("state", "/run/updated/status.json", "status file written by `updated poll`")
-		wal := fs.String("wal", "/var/lib/atom/deployment.json", "deployment WAL path")
+		wal := fs.String("wal", defaultWAL, "deployment WAL path")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot staging dir")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
 		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
@@ -153,9 +161,9 @@ func verifiedManifest(feed string) (otad.Manifest, error) {
 	return otad.ParseManifest(mData)
 }
 
-func check(feed, current string) Status {
+func check(feed, current, wal string) Status {
 	if current == "" {
-		current = installedVersion()
+		current = installedVersion(wal)
 	}
 	m, err := verifiedManifest(feed)
 	if err != nil {
@@ -170,8 +178,11 @@ func check(feed, current string) Status {
 
 // installedVersion reads the running rootfs version from the deployment WAL if present,
 // else falls back to os-release VERSION_ID, else "unknown".
-func installedVersion() string {
-	if b, err := os.ReadFile("/var/lib/atom/deployment.json"); err == nil {
+func installedVersion(wal string) string {
+	if wal == "" {
+		wal = defaultWAL
+	}
+	if b, err := os.ReadFile(wal); err == nil {
 		var d struct {
 			RootFS struct {
 				Current string `json:"current"`
@@ -223,7 +234,7 @@ type cfg struct {
 // pollOnce checks the feed and, when fetch is set and an update is available, stages it
 // so the next reboot boots into it. Returns the resulting Status.
 func pollOnce(c cfg, fetch bool) Status {
-	st := check(c.feed, c.current)
+	st := check(c.feed, c.current, c.wal)
 	if fetch && st.State == "available" {
 		if _, err := stage(c, func(done, total int64) {}); err != nil {
 			return Status{State: "error", Current: st.Current, Latest: st.Latest, Error: err.Error()}
