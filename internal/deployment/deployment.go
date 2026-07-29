@@ -3,8 +3,8 @@
 // kernelcache are current, which is a pending candidate, which is the last
 // known good, and the counters that drive automatic rollback and stabilization.
 //
-// The schema mirrors Atom Loops Architecture v4.6 section A6.1. The same file is
-// read and written by two Go components with a strict split of ownership:
+// The same file is read and written by two Go components with a strict split of
+// ownership:
 //
 //   - the initramfs engine (early boot): reads the WAL to pick the boot target,
 //     and performs exactly ONE write per boot -- decrementing rootfs.boot_attempts
@@ -60,9 +60,8 @@ type Deployment struct {
 type RootFS struct {
 	Current string `json:"current"`
 	Pending string `json:"pending"`
-	// PendingHash is the candidate's dm-verity root hash (the value baked into its signed
-	// UKI cmdline as ATOM_ROOT_HASH). The daemon compares it to the hash the init actually
-	// booted so it never confirms a candidate the loader silently fell back away from.
+	// PendingHash is the candidate's dm-verity root hash. The daemon checks it together
+	// with the signed UKI version so releases may safely reuse identical rootfs content.
 	PendingHash     string `json:"pending_hash,omitempty"`
 	Rollback        string `json:"rollback"`
 	BootAttempts    int    `json:"boot_attempts"`

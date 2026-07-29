@@ -450,11 +450,39 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
             dbg("anti-rollback: slot at or above floor\r\n");
         }
     }
-    if (measureIntoPcr(img)) dbg("TPM: measured into PCR 8\r\n") else dbg("TPM: absent, Level 1\r\n");
-
     const handle = bs.loadImage(false, uefi.handle, .{ .buffer = img }) catch return false;
+    if (measureIntoPcr(img)) dbg("TPM: measured into PCR 8\r\n") else dbg("TPM: absent, Level 1\r\n");
     _ = bs.startImage(handle) catch return false;
     return true;
+}
+
+const BootCascade = enum { trial, stable, recovery };
+
+// chainloadCascade keeps recovery and unlock requests isolated while allowing a
+// broken automatic slot to fall through to the remaining verified boot paths.
+// The trial budget is owned by the caller and is never changed during fallback.
+fn chainloadCascade(root: *File, cascade: BootCascade, key: [32]u8) bool {
+    const slots: []const []const u8 = switch (cascade) {
+        .trial => &.{
+            "kernelcache-next.efi",
+            "kernelcache-active.efi",
+            "kernelcache-prev.efi",
+            "kernelcache-recovery.efi",
+        },
+        .stable => &.{
+            "kernelcache-active.efi",
+            "kernelcache-prev.efi",
+            "kernelcache-recovery.efi",
+        },
+        .recovery => &.{"kernelcache-recovery.efi"},
+    };
+    for (slots) |slot| {
+        dbg("trying slot: ");
+        dbg(slot);
+        dbg("\r\n");
+        if (chainloadSlot(root, slot, key)) return true;
+    }
+    return false;
 }
 
 // pollKey polls the console for a keypress across a short window (ms). A press opens
@@ -547,7 +575,7 @@ pub fn main() void {
     // Slot selection from the ESP boot-state (the daemon writes it; we own the
     // trial budget). A pending candidate with attempts left boots -next after we
     // decrement and persist; a spent budget falls back to -active.
-    var slot: []const u8 = "kernelcache-active.efi";
+    var cascade: BootCascade = .stable;
     // The owner-armed bootloader-unlock consent lives beside boot-state on the ESP.
     // When armed, the wipe+unlock must run in the controlled recovery environment,
     // so an armed flag routes to the recovery slot just like an explicit request.
@@ -561,22 +589,19 @@ pub fn main() void {
             // always-present volume that survives a dead main.
             if (unlock_armed) dbg("boot-state: unlock armed\r\n");
             dbg("boot-state: recovery requested\r\n");
-            slot = "kernelcache-recovery.efi";
+            cascade = .recovery;
         } else if (st.trial and st.target_next and st.attempts > 0) {
             writeBootState(root, true, true, st.attempts - 1);
-            slot = "kernelcache-next.efi";
+            cascade = .trial;
         }
         uefi.pool_allocator.free(b);
     } else if (unlock_armed) {
         dbg("no boot-state, unlock armed -> recovery\r\n");
-        slot = "kernelcache-recovery.efi";
+        cascade = .recovery;
     } else {
         puts("no boot-state, defaulting to active\r\n");
     }
 
-    dbg("selected slot: ");
-    dbg(slot);
-    dbg("\r\n");
-    if (!chainloadSlot(root, slot, vkey)) puts("boot HALTED (no valid slot)\r\n");
+    if (!chainloadCascade(root, cascade, vkey)) puts("boot HALTED (no valid slot)\r\n");
     while (true) {}
 }

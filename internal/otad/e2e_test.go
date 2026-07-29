@@ -81,10 +81,10 @@ func e2eWAL(t *testing.T) string {
 
 // bootedAs points the daemon's /proc/cmdline reader at a synthetic cmdline that carries
 // the given verity hash, simulating the slot the loader actually booted.
-func bootedAs(t *testing.T, verityHash string) {
+func bootedAs(t *testing.T, version, verityHash string) {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "cmdline")
-	if err := os.WriteFile(p, []byte("console=ttyS0 ATOM_ROOT_HASH="+verityHash+" ro\n"), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte("console=ttyS0 ATOM_ROOT_HASH="+verityHash+" ATOM_VERSION="+version+" ro\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	old := bootedVersionPath
@@ -113,7 +113,7 @@ func TestOTACycleEndToEnd(t *testing.T) {
 	}
 
 	// 2. the loader booted the candidate (cmdline carries verity-v2)
-	bootedAs(t, "verity-v2")
+	bootedAs(t, "v2", "verity-v2")
 
 	// 3. three good boots -> promotion
 	var last string
@@ -146,7 +146,7 @@ func TestOTACycleRollback(t *testing.T) {
 		t.Fatalf("Stage: %v", err)
 	}
 	// the loader fell back to the OLD slot: cmdline carries verity-v1, not the candidate's.
-	bootedAs(t, "verity-v1")
+	bootedAs(t, "v1", "verity-v1")
 
 	d0, _ := deployment.Load(wal)
 	for i := 0; i < d0.RootFS.MaxAttempts+1; i++ {

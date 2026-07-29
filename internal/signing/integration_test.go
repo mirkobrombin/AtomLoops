@@ -75,6 +75,21 @@ func TestReleaseToPromoteEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	dirs := otad.StageDirs{Rootfs: filepath.Join(dir, "slot-rootfs"), ESP: filepath.Join(dir, "slot-esp")}
+	for _, slotDir := range []string{dirs.Rootfs, dirs.ESP} {
+		if err := os.MkdirAll(slotDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{
+		filepath.Join(dirs.Rootfs, "rootfs-active.erofs"),
+		filepath.Join(dirs.Rootfs, "rootfs-active.hash"),
+		filepath.Join(dirs.ESP, "kernelcache-active.efi"),
+		filepath.Join(dirs.ESP, "kernelcache-active.efi.sig"),
+	} {
+		if err := os.WriteFile(f, []byte("v1-active"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	if _, err := otad.Stage(context.Background(), wal, srv.URL+"/manifest.json", "", rootPub, dirs); err != nil {
 		t.Fatalf("Stage: %v", err)
@@ -100,7 +115,7 @@ func TestReleaseToPromoteEndToEnd(t *testing.T) {
 		}
 	}
 	cmdline := filepath.Join(dir, "cmdline")
-	os.WriteFile(cmdline, []byte("ATOM_ROOT_HASH="+d.RootFS.PendingHash+"\n"), 0o644)
+	os.WriteFile(cmdline, []byte("ATOM_ROOT_HASH="+d.RootFS.PendingHash+" ATOM_VERSION="+d.RootFS.Pending+"\n"), 0o644)
 	defer otad.SetBootedCmdlinePath(cmdline)()
 
 	// Greenboot the candidate to stability with the hardware counter armed.

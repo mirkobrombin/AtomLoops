@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mirkobrombin/atomloops/internal/deployment"
@@ -40,11 +41,13 @@ func Init(walPath, deviceID, rootfsVersion string) (string, error) {
 // reaches stable_threshold). With no candidate in flight it is a no-op. A failed
 // health gate leaves the WAL untouched, so boot_attempts continues to drain and
 // the initramfs will roll the candidate back on a later boot.
-// bootedVerityHash returns the dm-verity ROOT hash of the rootfs SLOT the system actually
-// booted, read straight from the running kernel's /proc/cmdline (ATOM_ROOT_HASH= or the
-// singularity-os sing.roothash=). The loader bakes this into each slot's SIGNED UKI, so an
-// attacker can't forge it and no init cooperation is needed. Empty if absent (then
-// BootSuccess cannot reconcile and keeps its prior behaviour).
+// bootIdentity is baked into the signed UKI cmdline. The root hash identifies the
+// rootfs while the version distinguishes releases that reuse the same rootfs.
+type bootIdentity struct {
+	VerityHash string
+	Version    string
+}
+
 var bootedVersionPath = "/proc/cmdline" // overridable in tests
 
 // SetBootedCmdlinePath overrides the file the booted-identity check reads the kernel
@@ -56,20 +59,27 @@ func SetBootedCmdlinePath(p string) (restore func()) {
 	return func() { bootedVersionPath = old }
 }
 
-func bootedVerityHash() string {
+func bootedIdentity() bootIdentity {
 	b, err := os.ReadFile(bootedVersionPath)
 	if err != nil {
-		return ""
+		return bootIdentity{}
 	}
+	var id bootIdentity
 	for _, tok := range strings.Fields(string(b)) {
 		if v, ok := strings.CutPrefix(tok, "ATOM_ROOT_HASH="); ok {
-			return v
+			id.VerityHash = v
 		}
 		if v, ok := strings.CutPrefix(tok, "sing.roothash="); ok {
-			return v
+			id.VerityHash = v
+		}
+		if v, ok := strings.CutPrefix(tok, "ATOM_VERSION="); ok {
+			id.Version = v
+		}
+		if v, ok := strings.CutPrefix(tok, "atom.version="); ok {
+			id.Version = v
 		}
 	}
-	return ""
+	return id
 }
 
 func BootSuccess(walPath, healthDir string, store CounterStore, dirs StageDirs) (string, error) {
@@ -87,7 +97,12 @@ func BootSuccess(walPath, healthDir string, store CounterStore, dirs StageDirs) 
 				_ = store.Advance(uint64(d.AntiRollback.CounterValue))
 			}
 		}
-		_ = SyncBootState(walPath, dirs) // keep the ESP pointing at -active when stable
+		if err := writeDeploymentBootState(d, dirs); err != nil {
+			return "", fmt.Errorf("stable boot-state reconciliation failed: %w", err)
+		}
+		syscall.Sync()
+		CleanupNextSlots(dirs)
+		syscall.Sync()
 		return "stable: no candidate in flight, nothing to confirm", nil
 	}
 	if err := RunHealthChecks(healthDir); err != nil {
@@ -97,45 +112,86 @@ func BootSuccess(walPath, healthDir string, store CounterStore, dirs StageDirs) 
 	// Only confirm the candidate if the RUNNING system IS the candidate. The loader
 	// can silently fall back to -active when the trial budget is spent; without this check a
 	// fallback boot of the old-good image would be counted as a "good boot" for the candidate
-	// and eventually promote a DEAD candidate -> brick. Inert until the init writes the marker
-	// (empty running -> old behaviour), active once /run/atom/booted-version is wired.
-	bh := bootedVerityHash()
-	if bh != "" && d.RootFS.PendingHash != "" && bh != d.RootFS.PendingHash {
+	// and eventually promote a dead candidate. The signed UKI command line in /proc/cmdline
+	// binds both the root hash and release label to the running image.
+	bi := bootedIdentity()
+	identityConfirmed := bi.VerityHash != "" &&
+		d.RootFS.PendingHash != "" &&
+		bi.VerityHash == d.RootFS.PendingHash &&
+		bi.Version != "" &&
+		bi.Version == d.RootFS.Pending
+	if !identityConfirmed {
 		d.Kernelcache.StableBoots = 0
-		exhausted := d.DecrementBootAttempt()
+		reconciled := false
+		if dirs.ESP != "" {
+			bs, rerr := ReadBootState(filepath.Join(dirs.ESP, "boot-state"))
+			if rerr == nil {
+				switch {
+				case bs.Target == "active":
+					d.RootFS.BootAttempts = 0
+					reconciled = true
+				case bs.Target == "next" && bs.Trial && bs.Attempts <= d.RootFS.BootAttempts:
+					d.RootFS.BootAttempts = bs.Attempts
+					reconciled = true
+				}
+			}
+		}
+		exhausted := d.RootFS.BootAttempts <= 0
+		if !reconciled {
+			exhausted = d.DecrementBootAttempt()
+		}
 		if exhausted {
 			d.Rollback() // budget spent and the candidate never booted -> return to last_known_good
 		}
+		if err := writeDeploymentBootState(d, dirs); err != nil {
+			return "", fmt.Errorf("candidate %s fallback boot-state commit failed: %w", cand, err)
+		}
+		syscall.Sync()
 		if err := d.Save(walPath); err != nil {
 			return "", err
 		}
-		_ = SyncBootState(walPath, dirs)
-		return fmt.Sprintf("candidate %s did NOT boot (booted verity hash %s != pending %s); failed attempt recorded (exhausted=%v)",
-			cand, bh, d.RootFS.PendingHash, exhausted), nil
-	}
-	// Gate the irreversible promote on positive identity: booted hash == pending_hash.
-	identityConfirmed := bh != "" && d.RootFS.PendingHash != "" && bh == d.RootFS.PendingHash
-	promoted := d.RecordGoodBoot(identityConfirmed)
-	if err := d.Save(walPath); err != nil {
-		return "", err
-	}
-	if promoted {
-		// Canonicalize the on-disk slots: -next becomes -active, old -active -> -prev.
-		if err := PromoteSlots(dirs); err != nil {
-			return "", fmt.Errorf("promoted %s but slot rename failed: %w", cand, err)
+		if exhausted {
+			CleanupNextSlots(dirs)
+			syscall.Sync()
 		}
-		// Arm the monotonic anti-rollback counter only now, after the candidate has
-		// stabilized (A4.2), so a faulty update never advances the floor.
+		return fmt.Sprintf("candidate %s did NOT boot (booted identity version=%s hash=%s, pending version=%s hash=%s); failed attempt recorded (exhausted=%v)",
+			cand, bi.Version, bi.VerityHash, d.RootFS.Pending, d.RootFS.PendingHash, exhausted), nil
+	}
+	promoted := d.RecordGoodBoot(identityConfirmed)
+	if promoted {
+		if err := PromoteSlots(dirs); err != nil {
+			return "", fmt.Errorf("candidate %s slot promotion failed: %w", cand, err)
+		}
+		// FAT directory fsync may return EINVAL even though the rename is still
+		// buffered by the guest kernel. Flush the slot transaction before the WAL
+		// can declare it committed.
+		syscall.Sync()
+		if dirs.ESP != "" {
+			if err := WriteBootState(filepath.Join(dirs.ESP, "boot-state"), BootState{Target: "active"}); err != nil {
+				return "", fmt.Errorf("candidate %s boot-state commit failed: %w", cand, err)
+			}
+		}
+		syscall.Sync()
+		if err := d.Save(walPath); err != nil {
+			return "", err
+		}
+		CleanupNextSlots(dirs)
+		syscall.Sync()
 		if store != nil {
 			if err := store.Advance(uint64(d.AntiRollback.CounterValue)); err != nil {
 				return "", fmt.Errorf("promoted %s but arming anti-rollback counter failed: %w", cand, err)
 			}
 		}
-		_ = SyncBootState(walPath, dirs) // now no pending -> boot -active
 		return fmt.Sprintf("candidate %s promoted to last_known_good (anti-rollback counter %d)",
 			cand, d.AntiRollback.CounterValue), nil
 	}
-	_ = SyncBootState(walPath, dirs) // still pending -> refresh -next attempts
+	if err := writeDeploymentBootState(d, dirs); err != nil {
+		return "", fmt.Errorf("candidate %s trial boot-state commit failed: %w", cand, err)
+	}
+	syscall.Sync()
+	if err := d.Save(walPath); err != nil {
+		return "", err
+	}
 	return fmt.Sprintf("good boot recorded for candidate %s (%d/%d stable)",
 		cand, d.Kernelcache.StableBoots, d.Kernelcache.StableThreshold), nil
 }
@@ -264,10 +320,12 @@ func Rollback(walPath string, dirs StageDirs) (string, error) {
 		return "", err
 	}
 	d.Rollback()
+	if err := writeDeploymentBootState(d, dirs); err != nil {
+		return "", fmt.Errorf("rollback boot-state commit failed: %w", err)
+	}
 	if err := d.Save(walPath); err != nil {
 		return "", err
 	}
-	_ = SyncBootState(walPath, dirs) // no pending candidate -> boot -active
 	return fmt.Sprintf("rolled back to %s", d.RootFS.Current), nil
 }
 

@@ -8,9 +8,9 @@ import (
 // nowFn is the clock, swapped in tests for deterministic timestamps.
 var nowFn = time.Now
 
-// kcOf derives a kernelcache version from a rootfs version string. Per the v4.6
-// review, rootfs and kernelcache versions are coupled 1:1 (rootfs "v43" <-> kc
-// 43), so the kernelcache integer is the trailing digit run of the rootfs version.
+// kcOf derives a kernelcache version from a rootfs version string. Rootfs and
+// kernelcache versions are coupled 1:1 (rootfs "v43" <-> kc 43), so the
+// kernelcache integer is the trailing digit run of the rootfs version.
 // Returns ok=false when the version carries no trailing integer, in which case
 // callers leave the kernelcache version untouched.
 func kcOf(rootfsVersion string) (int, bool) {
@@ -76,9 +76,9 @@ func (d *Deployment) Deploy(rootfsVersion string) {
 
 // RecordGoodBoot records a candidate's good boot: the first performs the switch
 // (current <- pending), each refreshes the budget and advances stable_boots. At
-// stable_threshold it promotes -- but only when identityConfirmed (the booted verity
-// hash matches pending_hash), since promotion advances the irreversible anti-rollback
-// floor. An unconfirmed candidate never promotes and rolls back on budget exhaustion.
+// stable_threshold it promotes, but only when the signed boot identity matches the
+// pending version and verity hash. An unconfirmed candidate rolls back on budget
+// exhaustion.
 func (d *Deployment) RecordGoodBoot(identityConfirmed bool) (promoted bool) {
 	if !d.HasPending() {
 		return false

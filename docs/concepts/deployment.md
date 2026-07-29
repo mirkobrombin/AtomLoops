@@ -27,7 +27,8 @@ update cleanly, leaving the running system untouched.
 5. **Pre-verification.** Downloaded artifacts are re-verified by hash against the
    manifest before they are allowed near the staging slot.
 6. **Staging.** The verified image is written into the inactive slot and its
-   verity hash is recorded for the boot-time check. Nothing is switched yet.
+   verity hash is recorded. Boot confirmation checks that hash and the release
+   version carried by the signed UKI command line. Nothing is switched yet.
 
 ## Nothing is switched until boot
 

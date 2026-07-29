@@ -20,8 +20,8 @@ The log holds the deployment state the daemon and the initramfs both read:
 - **pending / candidate** an image staged by deployment, not yet confirmed.
 - **rollback** the last known good image to fall back to.
 - **boot attempts** the remaining tries for the current candidate.
-- **verity hash** the target root's verity hash, recorded at staging for the
-  boot-time integrity check.
+- **verity hash** the target root's verity hash, recorded at staging and checked
+  together with the signed UKI version.
 
 ## Crash-durable writes
 
@@ -32,8 +32,7 @@ never a mix.
 
 ## Only the running candidate is promoted
 
-Confirmation is conservative. The daemon confirms a candidate only when the
-running system actually is that candidate, so it never promotes an image that the
-loader silently fell back away from. On a stable boot it also reconciles the
-hardware anti-rollback counter with the promoted log, closing the gap a crash
-could otherwise leave between the two.
+Confirmation requires both the pending verity hash and release version from the
+signed UKI command line. The pair distinguishes kernel-only releases and releases
+that reuse identical rootfs content. On a stable boot the daemon also reconciles
+the hardware anti-rollback counter with the promoted log.

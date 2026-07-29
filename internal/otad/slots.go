@@ -2,11 +2,15 @@ package otad
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/mirkobrombin/atomloops/internal/deployment"
 )
@@ -15,12 +19,16 @@ import (
 // means boot the -next slot on its remaining boot budget; otherwise boot -active.
 // A no-op when dirs.ESP is unset (tests, or a device with no separate ESP path).
 func SyncBootState(walPath string, dirs StageDirs) error {
-	if dirs.ESP == "" {
-		return nil
-	}
 	d, err := deployment.Load(walPath)
 	if err != nil {
 		return err
+	}
+	return writeDeploymentBootState(d, dirs)
+}
+
+func writeDeploymentBootState(d *deployment.Deployment, dirs StageDirs) error {
+	if dirs.ESP == "" {
+		return nil
 	}
 	b := BootState{Target: "active"}
 	switch {
@@ -124,51 +132,203 @@ type slotGroup struct {
 	suffixes []string
 }
 
-// PromoteSlots canonicalizes the on-disk slots after a candidate is promoted: the
-// -next artifacts become -active and the old -active becomes -prev (kept for
-// rollback), for both the kernelcache (ESP) and the rootfs. A group with nothing
-// staged is skipped (a WAL-only deploy is a no-op).
-//
-// Each group moves ALL-OR-NOTHING. A rootfs image is only bootable together with the
-// verity hash tree it was measured into, and a kernelcache only with the signature
-// the loader checks it against: renaming the image while leaving the old hash tree or
-// the old signature in place produces a system that fails verity or fails to chain --
-// a brick, on the reboot the user asked for. So a partially staged group is refused
-// before anything moves, and the device keeps booting what it has.
-func PromoteSlots(dirs StageDirs) error {
-	groups := []slotGroup{
-		{dirs.ESP, "kernelcache", []string{".efi", ".efi.sig"}},
-		{dirs.Rootfs, "rootfs", []string{".erofs", ".hash"}},
+func nonEmpty(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Size() > 0
+}
+
+func sameFileContent(a, b string) bool {
+	aa, err := os.Open(a)
+	if err != nil {
+		return false
 	}
+	defer aa.Close()
+	bb, err := os.Open(b)
+	if err != nil {
+		return false
+	}
+	defer bb.Close()
+	as, err := aa.Stat()
+	if err != nil {
+		return false
+	}
+	bs, err := bb.Stat()
+	if err != nil || as.Size() != bs.Size() {
+		return false
+	}
+	ah := sha256.New()
+	bh := sha256.New()
+	if _, err := io.Copy(ah, aa); err != nil {
+		return false
+	}
+	if _, err := io.Copy(bh, bb); err != nil {
+		return false
+	}
+	return string(ah.Sum(nil)) == string(bh.Sum(nil))
+}
+
+func sameFileIdentity(a, b string) bool {
+	aa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bb, err := os.Stat(b)
+	return err == nil && os.SameFile(aa, bb)
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil &&
+		!errors.Is(err, syscall.EINVAL) &&
+		!errors.Is(err, syscall.ENOTSUP) {
+		return err
+	}
+	return nil
+}
+
+func copyFileSync(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	dir := filepath.Dir(dst)
+	out, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := out.Name()
+	defer os.Remove(tmp)
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
+func linkFileSync(src, dst string) error {
+	dir := filepath.Dir(dst)
+	reservation, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".link-*")
+	if err != nil {
+		return err
+	}
+	tmp := reservation.Name()
+	if err := reservation.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Remove(tmp); err != nil {
+		return err
+	}
+	if err := os.Link(src, tmp); err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	if err := os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
+func preflightSlots(groups []slotGroup) error {
 	for _, g := range groups {
-		staged, missing := 0, []string(nil)
+		if g.dir == "" {
+			continue
+		}
+		staged := 0
 		for _, s := range g.suffixes {
-			if _, err := os.Stat(filepath.Join(g.dir, g.prefix+"-next"+s)); err == nil {
+			if nonEmpty(filepath.Join(g.dir, g.prefix+"-next"+s)) {
 				staged++
-			} else {
-				missing = append(missing, g.prefix+"-next"+s)
 			}
 		}
 		if staged == 0 {
-			continue // nothing staged for this group
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf("promote: %s partially staged, missing %v -- refusing (would not boot)",
-				g.prefix, missing)
+			return fmt.Errorf("promote: %s candidate is missing", g.prefix)
 		}
 		for _, s := range g.suffixes {
 			next := filepath.Join(g.dir, g.prefix+"-next"+s)
 			active := filepath.Join(g.dir, g.prefix+"-active"+s)
+			if nonEmpty(next) {
+				if !nonEmpty(active) {
+					return fmt.Errorf("promote: %s%s has no active slot", g.prefix, s)
+				}
+				continue
+			}
+			return fmt.Errorf("promote: %s partially staged, missing %s", g.prefix, filepath.Base(next))
+		}
+	}
+	return nil
+}
+
+// PromoteSlots prepares the active and previous slots while the loader still points
+// at -next. The ESP keeps its -next pair until the WAL and boot-state are durable, so
+// a crash during promotion can still boot the verified candidate and retry.
+func PromoteSlots(dirs StageDirs) error {
+	groups := []slotGroup{
+		{dirs.Rootfs, "rootfs", []string{".erofs", ".hash"}},
+		{dirs.ESP, "kernelcache", []string{".efi", ".efi.sig"}},
+	}
+	if err := preflightSlots(groups); err != nil {
+		return err
+	}
+	for _, g := range groups {
+		for _, s := range g.suffixes {
+			next := filepath.Join(g.dir, g.prefix+"-next"+s)
+			active := filepath.Join(g.dir, g.prefix+"-active"+s)
 			prev := filepath.Join(g.dir, g.prefix+"-prev"+s)
-			if _, err := os.Stat(active); err == nil {
-				if err := os.Rename(active, prev); err != nil {
+			if !nonEmpty(next) {
+				continue
+			}
+			if g.prefix == "kernelcache" {
+				if sameFileContent(active, next) {
+					continue
+				}
+				if err := copyFileSync(active, prev); err != nil {
 					return fmt.Errorf("promote: %s%s active->prev: %w", g.prefix, s, err)
 				}
+				if err := copyFileSync(next, active); err != nil {
+					return fmt.Errorf("promote: %s%s next->active: %w", g.prefix, s, err)
+				}
+				continue
 			}
-			if err := os.Rename(next, active); err != nil {
+			if sameFileIdentity(active, next) {
+				continue
+			}
+			if err := linkFileSync(active, prev); err != nil {
+				return fmt.Errorf("promote: %s%s active->prev: %w", g.prefix, s, err)
+			}
+			if err := linkFileSync(next, active); err != nil {
 				return fmt.Errorf("promote: %s%s next->active: %w", g.prefix, s, err)
 			}
 		}
 	}
 	return nil
+}
+
+// CleanupNextSlots runs only after promotion is committed. Failure is harmless:
+// the loader points at -active and a later stage replaces the stale files.
+func CleanupNextSlots(dirs StageDirs) {
+	if dirs.ESP != "" {
+		for _, s := range []string{".efi", ".efi.sig"} {
+			_ = os.Remove(filepath.Join(dirs.ESP, "kernelcache-next"+s))
+		}
+	}
+	if dirs.Rootfs != "" {
+		for _, s := range []string{".erofs", ".hash"} {
+			_ = os.Remove(filepath.Join(dirs.Rootfs, "rootfs-next"+s))
+		}
+	}
 }

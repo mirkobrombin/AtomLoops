@@ -50,18 +50,34 @@ func TestPromoteSlots(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(esp, "kernelcache-active.efi.sig")); string(b) != "sig-next" {
 		t.Errorf("kc active sig = %q, want sig-next", b)
 	}
-	// next -> active, old active -> prev
+	// The ESP keeps next until the caller commits boot-state and WAL.
 	if b, _ := os.ReadFile(filepath.Join(esp, "kernelcache-active.efi")); string(b) != "kc-next" {
 		t.Errorf("kc active = %q, want kc-next", b)
 	}
 	if b, _ := os.ReadFile(filepath.Join(esp, "kernelcache-prev.efi")); string(b) != "kc-active" {
 		t.Errorf("kc prev = %q, want kc-active", b)
 	}
-	if _, err := os.Stat(filepath.Join(esp, "kernelcache-next.efi")); !os.IsNotExist(err) {
-		t.Errorf("kc-next should be gone after promote")
+	if b, _ := os.ReadFile(filepath.Join(esp, "kernelcache-next.efi")); string(b) != "kc-next" {
+		t.Errorf("kc next = %q, want kc-next", b)
 	}
 	if b, _ := os.ReadFile(filepath.Join(rfs, "rootfs-active.erofs")); string(b) != "rfs-next" {
 		t.Errorf("rootfs active = %q, want rfs-next", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(rfs, "rootfs-next.erofs")); string(b) != "rfs-next" {
+		t.Errorf("rootfs next = %q, want rfs-next", b)
+	}
+	if err := PromoteSlots(dirs); err != nil {
+		t.Fatalf("idempotent promote retry: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(rfs, "rootfs-prev.erofs")); string(b) != "rfs-active" {
+		t.Errorf("rootfs prev changed on retry: %q", b)
+	}
+	CleanupNextSlots(dirs)
+	if _, err := os.Stat(filepath.Join(esp, "kernelcache-next.efi")); !os.IsNotExist(err) {
+		t.Errorf("kc-next should be gone after cleanup")
+	}
+	if _, err := os.Stat(filepath.Join(rfs, "rootfs-next.erofs")); !os.IsNotExist(err) {
+		t.Errorf("rootfs-next should be gone after cleanup")
 	}
 }
 
@@ -83,6 +99,71 @@ func TestPromoteRefusesPartialGroup(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(rfs, "rootfs-active.hash")); string(b) != "hash-active" {
 		t.Errorf("active hash was mutated by a refused promote: %q", b)
+	}
+}
+
+func TestPromotePreflightsEveryGroup(t *testing.T) {
+	esp := t.TempDir()
+	rfs := t.TempDir()
+	dirs := StageDirs{Rootfs: rfs, ESP: esp}
+	os.WriteFile(filepath.Join(esp, "kernelcache-active.efi"), []byte("kc-active"), 0o644)
+	os.WriteFile(filepath.Join(esp, "kernelcache-next.efi"), []byte("kc-next"), 0o644)
+	os.WriteFile(filepath.Join(esp, "kernelcache-active.efi.sig"), []byte("sig-active"), 0o644)
+	os.WriteFile(filepath.Join(esp, "kernelcache-next.efi.sig"), []byte("sig-next"), 0o644)
+	os.WriteFile(filepath.Join(rfs, "rootfs-active.erofs"), []byte("rfs-active"), 0o644)
+	os.WriteFile(filepath.Join(rfs, "rootfs-active.hash"), []byte("hash-active"), 0o644)
+	os.WriteFile(filepath.Join(rfs, "rootfs-next.erofs"), []byte("rfs-next"), 0o644)
+
+	if err := PromoteSlots(dirs); err == nil {
+		t.Fatal("promote accepted an incomplete rootfs group")
+	}
+	if b, _ := os.ReadFile(filepath.Join(esp, "kernelcache-active.efi")); string(b) != "kc-active" {
+		t.Errorf("ESP was mutated before every group passed preflight: %q", b)
+	}
+}
+
+func TestPromoteRejectsEmptySlot(t *testing.T) {
+	esp := t.TempDir()
+	os.WriteFile(filepath.Join(esp, "kernelcache-active.efi"), []byte("kc-active"), 0o644)
+	os.WriteFile(filepath.Join(esp, "kernelcache-next.efi"), nil, 0o644)
+	os.WriteFile(filepath.Join(esp, "kernelcache-active.efi.sig"), []byte("sig-active"), 0o644)
+	os.WriteFile(filepath.Join(esp, "kernelcache-next.efi.sig"), []byte("sig-next"), 0o644)
+
+	if err := PromoteSlots(StageDirs{ESP: esp}); err == nil {
+		t.Fatal("promote accepted an empty kernelcache")
+	}
+	if b, _ := os.ReadFile(filepath.Join(esp, "kernelcache-active.efi")); string(b) != "kc-active" {
+		t.Errorf("active kernelcache was mutated: %q", b)
+	}
+}
+
+func TestPromoteRejectsMissingCandidateWithPreviousSlot(t *testing.T) {
+	rfs := t.TempDir()
+	for _, slot := range []string{"active", "prev"} {
+		os.WriteFile(filepath.Join(rfs, "rootfs-"+slot+".erofs"), []byte(slot+"-image"), 0o644)
+		os.WriteFile(filepath.Join(rfs, "rootfs-"+slot+".hash"), []byte(slot+"-hash"), 0o644)
+	}
+
+	if err := PromoteSlots(StageDirs{Rootfs: rfs}); err == nil {
+		t.Fatal("promote accepted a missing candidate because a previous slot existed")
+	}
+	if b, _ := os.ReadFile(filepath.Join(rfs, "rootfs-active.erofs")); string(b) != "active-image" {
+		t.Errorf("active rootfs was mutated: %q", b)
+	}
+}
+
+func TestPromoteRejectsCandidateWithoutActiveSlot(t *testing.T) {
+	rfs := t.TempDir()
+	for _, slot := range []string{"prev", "next"} {
+		os.WriteFile(filepath.Join(rfs, "rootfs-"+slot+".erofs"), []byte(slot+"-image"), 0o644)
+		os.WriteFile(filepath.Join(rfs, "rootfs-"+slot+".hash"), []byte(slot+"-hash"), 0o644)
+	}
+
+	if err := PromoteSlots(StageDirs{Rootfs: rfs}); err == nil {
+		t.Fatal("promote accepted a candidate with no active slot")
+	}
+	if b, _ := os.ReadFile(filepath.Join(rfs, "rootfs-prev.erofs")); string(b) != "prev-image" {
+		t.Errorf("previous rootfs was mutated: %q", b)
 	}
 }
 

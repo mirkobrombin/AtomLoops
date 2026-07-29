@@ -5,7 +5,7 @@ Thanks for your interest in contributing!
 ## Quick Start
 
 ```bash
-git clone https://github.com/singularityos-lab/atomloops
+git clone https://github.com/mirkobrombin/AtomLoops
 cd atomloops
 go build ./...
 go test ./...

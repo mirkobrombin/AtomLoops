@@ -17,9 +17,11 @@ the signed metadata; Atom Loops does the rest. This page describes the contract.
    is immutable and carries no editable state.
 2. **A verity hash for the root.** The root is run under dm-verity, so the image
    must come with its verity metadata for the boot-time integrity check.
-3. **A signed manifest.** The manifest lists the image's version, its artifacts and
+3. **A signed boot identity.** The UKI command line must carry the release version
+   as `atom.version=` and the root hash used by dm-verity.
+4. **A signed manifest.** The manifest lists the image's version, its artifacts and
    their SHA256 hashes. It is signed with your operational signing key.
-4. **A key chain.** A cold root key signs a signing certificate and a revocation
+5. **A key chain.** A cold root key signs a signing certificate and a revocation
    list; the signing key signs manifests. See [Trust model](security/trust-model.md).
 
 ## What the device needs

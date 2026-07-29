@@ -14,8 +14,7 @@ import (
 // with the PoC daemon (scripts/deploy/ota-daemon-mock.go) plus the doc's
 // min_version anti-rollback floor.
 //
-// NOTE for B: confirm the field set against package.sh. rootfs_hash /
-// kernelcache_hash here are the SHA256 of the whole downloaded artifact (the
+// rootfs_hash and kernelcache_hash are the SHA256 of the whole downloaded artifact (the
 // daemon's pre-install integrity check); the dm-verity root hash that the
 // initramfs enforces at boot is separate and lives in the UKI cmdline, so it is
 // not duplicated here.
