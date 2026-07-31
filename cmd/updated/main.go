@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -84,8 +85,9 @@ func main() {
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot staging dir")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
 		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
+		stageLock := fs.String("stage-lock", "/run/updated-stage.lock", "cross-process update staging lock")
 		fs.Parse(os.Args[2:])
-		c := cfg{feed: *feed, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir}
+		c := cfg{feed: *feed, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock}
 		st := pollOnce(c, !*noFetch)
 		if err := writeState(c.state, st); err != nil {
 			fmt.Fprintf(os.Stderr, "updated: write state %s: %v\n", c.state, err)
@@ -105,8 +107,9 @@ func main() {
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot staging dir")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
 		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
+		stageLock := fs.String("stage-lock", "/run/updated-stage.lock", "cross-process update staging lock")
 		fs.Parse(os.Args[2:])
-		serve(cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir})
+		serve(cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock})
 	default:
 		fmt.Fprintln(os.Stderr, "usage: updated check|poll|serve ...")
 		os.Exit(2)
@@ -229,6 +232,7 @@ type cfg struct {
 	feed, sock, current, state string
 	wal, rootfsDir, espDir     string
 	firmwareDir                string
+	stageLock                  string
 }
 
 // pollOnce checks the feed and, when fetch is set and an update is available, stages it
@@ -237,6 +241,10 @@ func pollOnce(c cfg, fetch bool) Status {
 	st := check(c.feed, c.current, c.wal)
 	if fetch && st.State == "available" {
 		if _, err := stage(c, func(done, total int64) {}); err != nil {
+			if errors.Is(err, errStageBusy) {
+				st.State = "downloading"
+				return st
+			}
 			return Status{State: "error", Current: st.Current, Latest: st.Latest, Error: err.Error()}
 		}
 		st.State = "ready"
@@ -254,7 +262,8 @@ func writeState(path string, s Status) error {
 		os.MkdirAll(dir, 0o755)
 	}
 	b, _ := json.MarshalIndent(s, "", "  ")
-	tmp := path + ".tmp"
+	tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())
+	defer os.Remove(tmp)
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return err
 	}
@@ -277,9 +286,46 @@ func readState(path string) (Status, bool) {
 	return s, true
 }
 
-// stage fetches + verifies + stages the candidate via otad.Stage, which arms the ESP
-// boot-state so the next reboot boots the -next slot. On success the UI offers "restart".
+var errStageBusy = errors.New("another update is already being staged")
+var errNoStagedUpdate = errors.New("no staged update to reboot into")
+
+func acquireStageLock(path string) (*os.File, error) {
+	if path == "" {
+		return nil, errors.New("update staging lock path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create update lock directory: %w", err)
+	}
+	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open update staging lock: %w", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lock.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, errStageBusy
+		}
+		return nil, fmt.Errorf("lock update staging: %w", err)
+	}
+	return lock, nil
+}
+
+func releaseStageLock(lock *os.File) {
+	_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	_ = lock.Close()
+}
+
+// stage fetches + verifies + stages the candidate via otad.Stage while holding
+// the lock shared by the timer and UI service.
 func stage(c cfg, onProgress otad.ProgressFunc) (string, error) {
+	lock, err := acquireStageLock(c.stageLock)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		releaseStageLock(lock)
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	ctx = otad.WithProgress(ctx, onProgress)
@@ -287,51 +333,98 @@ func stage(c cfg, onProgress otad.ProgressFunc) (string, error) {
 		otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir, Firmware: c.firmwareDir})
 }
 
+type statusStore struct {
+	mu        sync.Mutex
+	statePath string
+	live      Status
+}
+
+func (s *statusStore) currentLocked() Status {
+	if s.live.State == "downloading" {
+		return s.live
+	}
+	if status, ok := readState(s.statePath); ok {
+		return status
+	}
+	return Status{State: "idle"}
+}
+
+func (s *statusStore) get() Status {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.currentLocked()
+}
+
+func (s *statusStore) claimDownload() (Status, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status := s.currentLocked()
+	if status.State != "available" {
+		return status, false
+	}
+	s.live = Status{
+		State: "downloading", Current: status.Current, Latest: status.Latest,
+	}
+	return status, true
+}
+
+func (s *statusStore) setProgress(done, total int64) {
+	if total <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.live.State == "downloading" {
+		s.live.Percent = int(done * 100 / total)
+	}
+}
+
+func (s *statusStore) complete(status Status) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = writeState(s.statePath, status)
+	s.live = Status{}
+}
+
+func (s *statusStore) publishPoll(status Status) Status {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.live.State == "downloading" {
+		return s.live
+	}
+	_ = writeState(s.statePath, status)
+	return status
+}
+
+func claimReboot(c cfg, statuses *statusStore) (*os.File, error) {
+	lock, err := acquireStageLock(c.stageLock)
+	if err != nil {
+		return nil, err
+	}
+	if statuses.get().State != "ready" {
+		releaseStageLock(lock)
+		return nil, errNoStagedUpdate
+	}
+	return lock, nil
+}
+
 // serve polls the feed and serves the Status over the unix socket for the desktop UI
 // (the dock update icon + the Store tab), plus /download and /reboot the UI drives.
 func serve(c cfg) {
-	var mu sync.Mutex
-	// The state file (written by `updated poll`) is the source of truth. In-memory
-	// state matters only while this serve is running a download, which owns the live
-	// percentage; every terminal state comes from the file.
-	var latest Status
-	get := func() Status {
-		mu.Lock()
-		defer mu.Unlock()
-		if latest.State == "downloading" {
-			return latest
-		}
-		if s, ok := readState(c.state); ok {
-			return s
-		}
-		return Status{State: "idle"}
-	}
-	download := func() {
-		s := get()
-		if s.State != "available" {
-			return
-		}
-		mu.Lock()
-		latest = Status{State: "downloading", Current: s.Current, Latest: s.Latest}
-		mu.Unlock()
+	statuses := statusStore{statePath: c.state}
+	download := func(s Status) {
 		onProg := func(done, total int64) {
-			if total <= 0 {
-				return
-			}
-			mu.Lock()
-			if latest.State == "downloading" {
-				latest.Percent = int(done * 100 / total)
-			}
-			mu.Unlock()
+			statuses.setProgress(done, total)
 		}
 		done := Status{State: "ready", Current: s.Current, Latest: s.Latest, Percent: 100}
 		if _, err := stage(c, onProg); err != nil {
-			done = Status{State: "error", Current: s.Current, Latest: s.Latest, Error: err.Error()}
+			if errors.Is(err, errStageBusy) {
+				done = Status{State: "downloading", Current: s.Current, Latest: s.Latest}
+			} else {
+				done = Status{State: "error", Current: s.Current, Latest: s.Latest, Error: err.Error()}
+			}
 		}
-		writeState(c.state, done) // publish the terminal state...
-		mu.Lock()
-		latest = Status{} // ...then drop the in-flight state so get() reads the file
-		mu.Unlock()
+		statuses.complete(done)
 	}
 
 	os.Remove(c.sock)
@@ -347,25 +440,36 @@ func serve(c cfg) {
 		json.NewEncoder(w).Encode(s)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, get()) })
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, statuses.get())
+	})
 	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
 		st := pollOnce(c, false)
-		writeState(c.state, st)
+		st = statuses.publishPoll(st)
 		writeJSON(w, st)
 	})
 	mux.HandleFunc("/download", func(w http.ResponseWriter, r *http.Request) {
-		go download()
-		writeJSON(w, get())
+		if st, ok := statuses.claimDownload(); ok {
+			go download(st)
+		}
+		writeJSON(w, statuses.get())
 	})
 	mux.HandleFunc("/reboot", func(w http.ResponseWriter, r *http.Request) {
-		if get().State != "ready" {
-			http.Error(w, `{"error":"no staged update to reboot into"}`, http.StatusConflict)
+		lock, err := claimReboot(c, &statuses)
+		if err != nil {
+			message := errNoStagedUpdate.Error()
+			if errors.Is(err, errStageBusy) {
+				message = errStageBusy.Error()
+			}
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, message), http.StatusConflict)
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
 		go func() {
 			syscall.Sync()
-			syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
+			if err := syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART); err != nil {
+				releaseStageLock(lock)
+			}
 		}()
 	})
 	fmt.Fprintf(os.Stderr, "updated: serving %s (feed %s)\n", c.sock, c.feed)

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -62,6 +66,95 @@ func TestWriteReadStateRoundTrip(t *testing.T) {
 	}
 	if _, ok := readState(filepath.Join(t.TempDir(), "absent.json")); ok {
 		t.Error("absent file should return ok=false")
+	}
+}
+
+func TestStatusStoreClaimsDownloadOnce(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "status.json")
+	available := Status{State: "available", Current: "v1", Latest: "v2"}
+	if err := writeState(statePath, available); err != nil {
+		t.Fatal(err)
+	}
+	store := statusStore{statePath: statePath}
+
+	var claims atomic.Int32
+	var ready sync.WaitGroup
+	start := make(chan struct{})
+	for range 16 {
+		ready.Add(1)
+		go func() {
+			defer ready.Done()
+			<-start
+			if _, ok := store.claimDownload(); ok {
+				claims.Add(1)
+			}
+		}()
+	}
+	close(start)
+	ready.Wait()
+
+	if got := claims.Load(); got != 1 {
+		t.Fatalf("download claims = %d, want 1", got)
+	}
+	if got := store.get(); got.State != "downloading" || got.Latest != "v2" {
+		t.Fatalf("claimed status = %+v, want downloading v2", got)
+	}
+	if got := store.publishPoll(available); got.State != "downloading" {
+		t.Fatalf("poll replaced active download: %+v", got)
+	}
+}
+
+func TestStageLockExcludesOtherProcesses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stage.lock")
+	first, err := acquireStageLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = syscall.Flock(int(first.Fd()), syscall.LOCK_UN)
+		_ = first.Close()
+	}()
+
+	if second, err := acquireStageLock(path); !errors.Is(err, errStageBusy) {
+		if second != nil {
+			second.Close()
+		}
+		t.Fatalf("second lock = %v, want errStageBusy", err)
+	}
+}
+
+func TestRebootClaimSharesStageLock(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "status.json")
+	lockPath := filepath.Join(dir, "stage.lock")
+	if err := writeState(statePath, Status{State: "ready", Current: "v1", Latest: "v2"}); err != nil {
+		t.Fatal(err)
+	}
+	statuses := statusStore{statePath: statePath}
+	c := cfg{stageLock: lockPath}
+
+	staging, err := acquireStageLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reboot, err := claimReboot(c, &statuses); !errors.Is(err, errStageBusy) {
+		if reboot != nil {
+			releaseStageLock(reboot)
+		}
+		t.Fatalf("reboot claim while staging = %v, want errStageBusy", err)
+	}
+	releaseStageLock(staging)
+
+	reboot, err := claimReboot(c, &statuses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseStageLock(reboot)
+	if staging, err := acquireStageLock(lockPath); !errors.Is(err, errStageBusy) {
+		if staging != nil {
+			releaseStageLock(staging)
+		}
+		t.Fatalf("stage claim during reboot = %v, want errStageBusy", err)
 	}
 }
 
@@ -128,7 +221,7 @@ func TestPollOnceFetchStages(t *testing.T) {
 	c := cfg{
 		feed: feed, current: "v1", state: filepath.Join(work, "status.json"), wal: wal,
 		rootfsDir: filepath.Join(work, "rootfs"), espDir: filepath.Join(work, "esp"),
-		firmwareDir: filepath.Join(work, "firmware"),
+		firmwareDir: filepath.Join(work, "firmware"), stageLock: filepath.Join(work, "stage.lock"),
 	}
 
 	if st := pollOnce(c, false); st.State != "available" {

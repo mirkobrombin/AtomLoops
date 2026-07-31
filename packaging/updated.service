@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Group=singularity-session
 ExecStart=/usr/libexec/updated serve
 Restart=on-failure
 RestartSec=30
