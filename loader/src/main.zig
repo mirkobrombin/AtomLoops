@@ -255,14 +255,17 @@ fn writeBootState(root: *File, target_next: bool, trial: bool, attempts: i64) vo
 }
 
 // readUnlockArmed reads the ESP consent flag \EFI\atom\state\unlock-armed (a small
-// JSON {"armed":bool,...} written only by the recovery agent's arm_unlock; the
-// desktop never writes the ESP directly). Missing or unparseable is read as not
-// armed -- fail closed, matching the agent side.
+// JSON {"armed":bool,"owner_uid":number,...} written only after the recovery
+// agent verifies the local owner's PIN. Missing, legacy, or unparseable records
+// are read as not armed, matching the agent side.
 fn readUnlockArmed(root: *File) bool {
     const buf = readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\state\\unlock-armed")) orelse return false;
     defer uefi.pool_allocator.free(buf);
     const v = valueStart(buf, "\"armed\"") orelse return false;
-    return std.mem.startsWith(u8, buf[v..], "true");
+    if (!std.mem.startsWith(u8, buf[v..], "true")) return false;
+    const owner = valueStart(buf, "\"owner_uid\"") orelse return false;
+    const uid = parseUint(buf[owner..]) orelse return false;
+    return uid >= 1000;
 }
 
 // Minimal EFI_TCG2_PROTOCOL binding (not in std): enough to measure an image into a
