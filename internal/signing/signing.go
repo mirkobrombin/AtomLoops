@@ -119,7 +119,8 @@ type FirmwareSpec struct {
 // manifest that advertises one without the other describes an update that cannot
 // boot, so BuildManifest refuses to write it.
 type ReleaseSpec struct {
-	Version, MinVersion string
+	Version, MinVersion                       string
+	ProductName, ProductVersion, ProductBuild string
 
 	RootFSFile, RootFSURL string
 	// RootFSVerityHash is the dm-verity ROOT hash of RootFSFile, the same value baked
@@ -164,6 +165,9 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 	m := otad.Manifest{
 		Version:            r.Version,
 		MinVersion:         r.MinVersion,
+		ProductName:        r.ProductName,
+		ProductVersion:     r.ProductVersion,
+		ProductBuild:       r.ProductBuild,
 		RootFSURL:          r.RootFSURL,
 		RootFSHash:         rh,
 		RootFSVerityHash:   r.RootFSVerityHash,
@@ -214,6 +218,9 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 	}
 	b, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
+		return "", err
+	}
+	if _, err := otad.ParseManifest(b); err != nil {
 		return "", err
 	}
 	if err := os.WriteFile(outPath, b, 0o644); err != nil {

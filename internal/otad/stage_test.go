@@ -8,10 +8,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mirkobrombin/atomloops/internal/deployment"
@@ -109,6 +111,34 @@ func TestStageEndToEnd(t *testing.T) {
 	bs, _ := ReadBootState(filepath.Join(dirs.ESP, "boot-state"))
 	if bs.Target != "next" || !bs.Trial {
 		t.Errorf("boot-state not armed: %+v", bs)
+	}
+}
+
+func TestStageExpectedManifest(t *testing.T) {
+	base, rootPub := stageServer(t, false)
+	resp, err := http.Get(base + "/manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wal := newWALFile(t)
+	dirs := StageDirs{Rootfs: filepath.Join(t.TempDir(), "rootfs"), ESP: filepath.Join(t.TempDir(), "esp")}
+	if _, err := StageExpectedManifest(context.Background(), wal, base+"/manifest.json", "", rootPub, dirs, sha256hex(manifest)); err != nil {
+		t.Fatalf("StageExpectedManifest matching digest: %v", err)
+	}
+
+	wal = newWALFile(t)
+	dirs = StageDirs{Rootfs: filepath.Join(t.TempDir(), "rootfs"), ESP: filepath.Join(t.TempDir(), "esp")}
+	if _, err := StageExpectedManifest(context.Background(), wal, base+"/manifest.json", "", rootPub, dirs, strings.Repeat("0", 64)); err == nil || !strings.Contains(err.Error(), "manifest changed since update check") {
+		t.Fatalf("StageExpectedManifest wrong digest = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dirs.Rootfs, "rootfs-next.erofs")); !os.IsNotExist(err) {
+		t.Fatalf("wrong manifest digest staged rootfs: %v", err)
 	}
 }
 

@@ -165,6 +165,9 @@ func run(args []string) int {
 		out := fs.String("out", "manifest.json", "output manifest path")
 		version := fs.String("version", "", "new version (e.g. v2)")
 		minVersion := fs.String("min-version", "", "anti-rollback floor version")
+		productName := fs.String("product-name", "", "optional public product name")
+		productVersion := fs.String("product-version", "", "optional public product version")
+		productBuild := fs.String("product-build", "", "optional public product build")
 		rootfs := fs.String("rootfs", "", "rootfs artifact file")
 		rootfsURL := fs.String("rootfs-url", "", "URL the device will fetch the rootfs from")
 		kc := fs.String("kernelcache", "", "kernelcache artifact file")
@@ -217,6 +220,7 @@ func run(args []string) int {
 		}
 		p, err := signing.BuildManifest(*out, signing.ReleaseSpec{
 			Version: *version, MinVersion: *minVersion,
+			ProductName: *productName, ProductVersion: *productVersion, ProductBuild: *productBuild,
 			RootFSFile: *rootfs, RootFSURL: *rootfsURL,
 			RootFSVerityHash:   *rootfsVerity,
 			RootFSHashTreeFile: *rootfsHT, RootFSHashTreeURL: *rootfsHTURL,

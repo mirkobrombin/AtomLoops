@@ -2,6 +2,7 @@ package otad
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +36,19 @@ type StageDirs struct {
 // key vouched for by a root-signed cert fetched next to the manifest, and the
 // revocation list is checked FIRST, per the A4.1 trust chain.
 func Stage(ctx context.Context, walPath, manifestURL, revocationURL string, rootPub []byte, dirs StageDirs) (string, error) {
+	return stage(ctx, walPath, manifestURL, revocationURL, rootPub, dirs, "")
+}
+
+// StageExpectedManifest performs Stage only when the fetched signed manifest
+// matches the SHA256 recorded by the preceding update check.
+func StageExpectedManifest(ctx context.Context, walPath, manifestURL, revocationURL string, rootPub []byte, dirs StageDirs, expectedManifestSHA256 string) (string, error) {
+	if expectedManifestSHA256 == "" {
+		return "", fmt.Errorf("stage: missing checked manifest digest")
+	}
+	return stage(ctx, walPath, manifestURL, revocationURL, rootPub, dirs, expectedManifestSHA256)
+}
+
+func stage(ctx context.Context, walPath, manifestURL, revocationURL string, rootPub []byte, dirs StageDirs, expectedManifestSHA256 string) (string, error) {
 	work, err := os.MkdirTemp("", "atomd-stage-*")
 	if err != nil {
 		return "", err
@@ -92,6 +106,12 @@ func Stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	// 4. Manifest signature vs the (root-vouched) signing key.
 	if !trust.Verify(mData, mSig, signingPub) {
 		return "", fmt.Errorf("stage: manifest signature invalid -- refusing update")
+	}
+	if expectedManifestSHA256 != "" {
+		manifestSHA256 := fmt.Sprintf("%x", sha256.Sum256(mData))
+		if !strings.EqualFold(manifestSHA256, expectedManifestSHA256) {
+			return "", fmt.Errorf("stage: manifest changed since update check -- check again")
+		}
 	}
 	m, err := ParseManifest(mData)
 	if err != nil {

@@ -1,7 +1,5 @@
 [Unit]
 Description=Sinty OS update status responder (serves /run/updated.sock for the UI)
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple

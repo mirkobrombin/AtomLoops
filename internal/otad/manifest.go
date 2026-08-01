@@ -1,12 +1,16 @@
 package otad
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Manifest describes an available update: the artifacts to fetch and the hashes
@@ -19,10 +23,13 @@ import (
 // initramfs enforces at boot is separate and lives in the UKI cmdline, so it is
 // not duplicated here.
 type Manifest struct {
-	Version    string `json:"version"`
-	MinVersion string `json:"min_version"`
-	RootFSURL  string `json:"rootfs_url"`
-	RootFSHash string `json:"rootfs_hash"`
+	Version        string `json:"version"`
+	MinVersion     string `json:"min_version"`
+	ProductName    string `json:"product_name,omitempty"`
+	ProductVersion string `json:"product_version,omitempty"`
+	ProductBuild   string `json:"product_build,omitempty"`
+	RootFSURL      string `json:"rootfs_url"`
+	RootFSHash     string `json:"rootfs_hash"`
 	// RootFSVerityHash is the candidate's dm-verity ROOT hash (distinct from RootFSHash, the
 	// file SHA256). It equals the ATOM_ROOT_HASH baked into the candidate's signed UKI cmdline,
 	// and lets the daemon confirm the candidate actually booted. Optional for back-compat.
@@ -121,6 +128,9 @@ func (m Manifest) HasFirmware() bool { return len(m.FirmwareBundleList()) > 0 }
 // or any artifact reference is rejected, so staging never runs on a half-formed
 // update description.
 func ParseManifest(b []byte) (Manifest, error) {
+	if !utf8.Valid(b) {
+		return Manifest{}, fmt.Errorf("manifest: invalid UTF-8")
+	}
 	var m Manifest
 	if err := json.Unmarshal(b, &m); err != nil {
 		return Manifest{}, err
@@ -132,6 +142,31 @@ func ParseManifest(b []byte) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("manifest: missing rootfs url/hash")
 	case m.KernelcacheURL == "" || m.KernelcacheHash == "":
 		return Manifest{}, fmt.Errorf("manifest: missing kernelcache url/hash")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(b, &fields); err != nil {
+		return Manifest{}, err
+	}
+	for name, value := range map[string]string{
+		"product_name": m.ProductName, "product_version": m.ProductVersion, "product_build": m.ProductBuild,
+	} {
+		for rawName, raw := range fields {
+			if strings.EqualFold(rawName, name) && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				return Manifest{}, fmt.Errorf("manifest: invalid %s", name)
+			}
+		}
+		if value == "" {
+			continue
+		}
+		if len(value) > 128 || strings.TrimSpace(value) != value {
+			return Manifest{}, fmt.Errorf("manifest: invalid %s", name)
+		}
+		for _, r := range value {
+			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) ||
+				unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+				return Manifest{}, fmt.Errorf("manifest: invalid %s", name)
+			}
+		}
 	}
 	// Firmware track (optional): validate every bundle, so staging never runs on a
 	// half-formed one. Names must be unique (they are the on-disk slot directories).

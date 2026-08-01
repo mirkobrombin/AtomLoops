@@ -3,16 +3,18 @@
 // the advertised version against the installed one, and reports a small Status the
 // desktop shell consumes (the dock update icon + the Store "Aggiornamenti" tab) over a
 // local unix socket. Nothing is trusted by transport: a forged feed is rejected by
-// signature, so the manifest may live on any cheap/static host. A dedicated .timer
-// fires `updated poll`; `updated serve` only surfaces the result over the socket.
+// signature, so the manifest may live on any cheap/static host. `updated serve`
+// checks once at startup, and a dedicated .timer keeps the status fresh.
 //
 //	updated check --feed URL [--current V]              one-shot: print status JSON
-//	updated poll  --feed URL --state P [--no-fetch]     check + fetch + write state
+//	updated poll  --feed URL --state P                  check + write state
 //	updated serve --feed URL --socket P --state P       socket responder for the UI
 package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,6 +22,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -50,11 +53,32 @@ const defaultWAL = "/boot/rootfs/deployment.json"
 // idle (no badge) | available (download badge) | downloading (progress bar) |
 // ready (green check, offer reboot) | error.
 type Status struct {
-	State   string `json:"state"`
-	Current string `json:"current"`
-	Latest  string `json:"latest"`
-	Percent int    `json:"percent"`
-	Error   string `json:"error,omitempty"`
+	State          string `json:"state"`
+	Current        string `json:"current"`
+	Latest         string `json:"latest"`
+	ProductName    string `json:"product_name,omitempty"`
+	ProductVersion string `json:"product_version,omitempty"`
+	ProductBuild   string `json:"product_build,omitempty"`
+	ConsentToken   string `json:"consent_token,omitempty"`
+	Percent        int    `json:"percent"`
+	Error          string `json:"error,omitempty"`
+	manifestSHA256 string
+	retryable      bool
+}
+
+type transientFeedError struct{ err error }
+
+func (e transientFeedError) Error() string { return e.err.Error() }
+func (e transientFeedError) Unwrap() error { return e.err }
+
+func clientStatus(status Status) Status {
+	status.ConsentToken = ""
+	if status.State != "available" || status.manifestSHA256 == "" {
+		return status
+	}
+	sum := sha256.Sum256([]byte("sinty-update-consent-v1:" + status.manifestSHA256))
+	status.ConsentToken = hex.EncodeToString(sum[:])
+	return status
 }
 
 func main() {
@@ -80,7 +104,7 @@ func main() {
 		feed := fs.String("feed", "https://updates.sinty.dev/stable", "update feed base URL")
 		cur := fs.String("current", "", "installed version (default: read deployment)")
 		state := fs.String("state", "/run/updated/status.json", "status file the UI reads")
-		noFetch := fs.Bool("no-fetch", false, "only check; do not download/stage")
+		fs.Bool("no-fetch", false, "deprecated; polling never downloads")
 		wal := fs.String("wal", defaultWAL, "deployment WAL path")
 		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot staging dir")
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
@@ -88,8 +112,9 @@ func main() {
 		stageLock := fs.String("stage-lock", "/run/updated-stage.lock", "cross-process update staging lock")
 		fs.Parse(os.Args[2:])
 		c := cfg{feed: *feed, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock}
-		st := pollOnce(c, !*noFetch)
-		if err := writeState(c.state, st); err != nil {
+		statuses := statusStore{statePath: c.state}
+		st, err := statuses.publishPoll(pollOnce(c))
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "updated: write state %s: %v\n", c.state, err)
 		}
 		b, _ := json.MarshalIndent(st, "", "  ")
@@ -109,7 +134,11 @@ func main() {
 		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
 		stageLock := fs.String("stage-lock", "/run/updated-stage.lock", "cross-process update staging lock")
 		fs.Parse(os.Args[2:])
-		serve(cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock})
+		c := cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock}
+		if err := serve(c); err != nil {
+			fmt.Fprintf(os.Stderr, "updated: serve: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintln(os.Stderr, "usage: updated check|poll|serve ...")
 		os.Exit(2)
@@ -122,57 +151,74 @@ func fetchBytes(url string) ([]byte, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, transientFeedError{err: err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: status %d", url, resp.StatusCode)
+		err := fmt.Errorf("%s: status %d", url, resp.StatusCode)
+		if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			return nil, transientFeedError{err: err}
+		}
+		return nil, err
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, transientFeedError{err: err}
+	}
+	return b, nil
 }
 
 // verifiedManifest fetches and verifies the feed's manifest against the embedded ROOT
 // key (root -> signing-cert -> manifest). Returns the parsed manifest only if every
 // signature checks out.
-func verifiedManifest(feed string) (otad.Manifest, error) {
+func verifiedManifest(feed string) (otad.Manifest, string, error) {
 	feed = strings.TrimRight(feed, "/")
 	get := func(name string) ([]byte, error) { return fetchBytes(feed + "/" + name) }
 
 	certData, err := get("signing-cert.json")
 	if err != nil {
-		return otad.Manifest{}, err
+		return otad.Manifest{}, "", err
 	}
 	certSig, err := get("signing-cert.json.sig")
 	if err != nil {
-		return otad.Manifest{}, err
+		return otad.Manifest{}, "", err
 	}
 	signingPub, _, err := trust.VerifyCert(certData, certSig, rootPub, time.Now())
 	if err != nil {
-		return otad.Manifest{}, fmt.Errorf("signing cert: %w", err)
+		return otad.Manifest{}, "", fmt.Errorf("signing cert: %w", err)
 	}
 	mData, err := get("manifest.json")
 	if err != nil {
-		return otad.Manifest{}, err
+		return otad.Manifest{}, "", err
 	}
 	mSig, err := get("manifest.json.sig")
 	if err != nil {
-		return otad.Manifest{}, err
+		return otad.Manifest{}, "", err
 	}
 	if !trust.Verify(mData, mSig, signingPub) {
-		return otad.Manifest{}, fmt.Errorf("manifest signature invalid -- refusing")
+		return otad.Manifest{}, "", fmt.Errorf("manifest signature invalid -- refusing")
 	}
-	return otad.ParseManifest(mData)
+	m, err := otad.ParseManifest(mData)
+	if err != nil {
+		return otad.Manifest{}, "", err
+	}
+	return m, fmt.Sprintf("%x", sha256.Sum256(mData)), nil
 }
 
 func check(feed, current, wal string) Status {
 	if current == "" {
 		current = installedVersion(wal)
 	}
-	m, err := verifiedManifest(feed)
+	m, manifestSHA256, err := verifiedManifest(feed)
 	if err != nil {
-		return Status{State: "error", Current: current, Error: err.Error()}
+		var transient transientFeedError
+		return Status{State: "error", Current: current, Error: err.Error(), retryable: errors.As(err, &transient)}
 	}
-	st := Status{Current: current, Latest: m.Version, State: "idle"}
+	st := Status{
+		Current: current, Latest: m.Version, State: "idle",
+		ProductName: m.ProductName, ProductVersion: m.ProductVersion, ProductBuild: m.ProductBuild,
+		manifestSHA256: manifestSHA256,
+	}
 	if newer(m.Version, current) {
 		st.State = "available"
 	}
@@ -235,23 +281,8 @@ type cfg struct {
 	stageLock                  string
 }
 
-// pollOnce checks the feed and, when fetch is set and an update is available, stages it
-// so the next reboot boots into it. Returns the resulting Status.
-func pollOnce(c cfg, fetch bool) Status {
-	st := check(c.feed, c.current, c.wal)
-	if fetch && st.State == "available" {
-		if _, err := stage(c, func(done, total int64) {}); err != nil {
-			if errors.Is(err, errStageBusy) {
-				st.State = "downloading"
-				return st
-			}
-			return Status{State: "error", Current: st.Current, Latest: st.Latest, Error: err.Error()}
-		}
-		st.State = "ready"
-		st.Percent = 100
-	}
-	return st
-}
+// pollOnce checks the feed without downloading or staging artifacts.
+func pollOnce(c cfg) Status { return check(c.feed, c.current, c.wal) }
 
 // writeState atomically writes the status file (temp + rename). Empty path is a no-op.
 func writeState(path string, s Status) error {
@@ -261,7 +292,11 @@ func writeState(path string, s Status) error {
 	if dir := filepath.Dir(path); dir != "" {
 		os.MkdirAll(dir, 0o755)
 	}
-	b, _ := json.MarshalIndent(s, "", "  ")
+	stored := struct {
+		Status
+		ManifestSHA256 string `json:"manifest_sha256,omitempty"`
+	}{Status: s, ManifestSHA256: s.manifestSHA256}
+	b, _ := json.MarshalIndent(stored, "", "  ")
 	tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())
 	defer os.Remove(tmp)
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
@@ -279,11 +314,15 @@ func readState(path string) (Status, bool) {
 	if err != nil {
 		return Status{}, false
 	}
-	var s Status
-	if json.Unmarshal(b, &s) != nil {
+	stored := struct {
+		Status
+		ManifestSHA256 string `json:"manifest_sha256,omitempty"`
+	}{}
+	if json.Unmarshal(b, &stored) != nil {
 		return Status{}, false
 	}
-	return s, true
+	stored.Status.manifestSHA256 = stored.ManifestSHA256
+	return stored.Status, true
 }
 
 var errStageBusy = errors.New("another update is already being staged")
@@ -316,8 +355,8 @@ func releaseStageLock(lock *os.File) {
 }
 
 // stage fetches + verifies + stages the candidate via otad.Stage while holding
-// the lock shared by the timer and UI service.
-func stage(c cfg, onProgress otad.ProgressFunc) (string, error) {
+// the lock shared with any other staging process.
+func stage(c cfg, expectedManifestSHA256 string, onProgress otad.ProgressFunc) (string, error) {
 	lock, err := acquireStageLock(c.stageLock)
 	if err != nil {
 		return "", err
@@ -329,14 +368,15 @@ func stage(c cfg, onProgress otad.ProgressFunc) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	ctx = otad.WithProgress(ctx, onProgress)
-	return otad.Stage(ctx, c.wal, strings.TrimRight(c.feed, "/")+"/manifest.json", "", rootPub,
-		otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir, Firmware: c.firmwareDir})
+	return otad.StageExpectedManifest(ctx, c.wal, strings.TrimRight(c.feed, "/")+"/manifest.json", "", rootPub,
+		otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir, Firmware: c.firmwareDir}, expectedManifestSHA256)
 }
 
 type statusStore struct {
-	mu        sync.Mutex
-	statePath string
-	live      Status
+	mu         sync.Mutex
+	statePath  string
+	live       Status
+	advertised Status
 }
 
 func (s *statusStore) currentLocked() Status {
@@ -355,16 +395,41 @@ func (s *statusStore) get() Status {
 	return s.currentLocked()
 }
 
-func (s *statusStore) claimDownload() (Status, bool) {
+func (s *statusStore) getForClient() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	status := s.currentLocked()
-	if status.State != "available" {
-		return status, false
+	s.advertiseLocked(status)
+	return status
+}
+
+func (s *statusStore) advertise(status Status) Status {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.advertiseLocked(status)
+	return status
+}
+
+func (s *statusStore) advertiseLocked(status Status) {
+	if status.State == "available" {
+		s.advertised = status
+		return
 	}
-	s.live = Status{
-		State: "downloading", Current: status.Current, Latest: status.Latest,
+	s.advertised = Status{}
+}
+
+func (s *statusStore) claimDownload(consentToken string) (Status, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status := s.advertised
+	if status.State != "available" || consentToken == "" || clientStatus(status).ConsentToken != consentToken {
+		return s.currentLocked(), false
 	}
+	s.advertised = Status{}
+	s.live = status
+	s.live.State = "downloading"
+	s.live.Percent = 0
+	s.live.Error = ""
 	return status, true
 }
 
@@ -386,14 +451,16 @@ func (s *statusStore) complete(status Status) {
 	s.live = Status{}
 }
 
-func (s *statusStore) publishPoll(status Status) Status {
+func (s *statusStore) publishPoll(status Status) (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.live.State == "downloading" {
-		return s.live
+		return s.live, nil
 	}
-	_ = writeState(s.statePath, status)
-	return status
+	if current, ok := readState(s.statePath); ok && current.State == "ready" {
+		return current, nil
+	}
+	return status, writeState(s.statePath, status)
 }
 
 func claimReboot(c cfg, statuses *statusStore) (*os.File, error) {
@@ -408,53 +475,112 @@ func claimReboot(c cfg, statuses *statusStore) (*os.File, error) {
 	return lock, nil
 }
 
-// serve polls the feed and serves the Status over the unix socket for the desktop UI
-// (the dock update icon + the Store tab), plus /download and /reboot the UI drives.
-func serve(c cfg) {
+func listenSocket(path string) (net.Listener, error) {
+	if path == "" {
+		return nil, errors.New("update socket path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("refusing to replace non-socket path %s", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o660); err != nil {
+		ln.Close()
+		os.Remove(path)
+		return nil, err
+	}
+	return ln, nil
+}
+
+// newUpdateServer serves status plus the download and reboot actions the UI drives.
+// The first signed feed check starts only after serve has bound the socket.
+func newUpdateServer(c cfg) *http.Server {
 	statuses := statusStore{statePath: c.state}
 	download := func(s Status) {
 		onProg := func(done, total int64) {
 			statuses.setProgress(done, total)
 		}
-		done := Status{State: "ready", Current: s.Current, Latest: s.Latest, Percent: 100}
-		if _, err := stage(c, onProg); err != nil {
+		done := s
+		done.State = "ready"
+		done.Percent = 100
+		done.Error = ""
+		if _, err := stage(c, s.manifestSHA256, onProg); err != nil {
 			if errors.Is(err, errStageBusy) {
-				done = Status{State: "downloading", Current: s.Current, Latest: s.Latest}
+				done.State = "downloading"
+				done.Percent = 0
 			} else {
-				done = Status{State: "error", Current: s.Current, Latest: s.Latest, Error: err.Error()}
+				done.State = "error"
+				done.Percent = 0
+				done.Error = err.Error()
 			}
 		}
 		statuses.complete(done)
 	}
 
-	os.Remove(c.sock)
-	ln, err := net.Listen("unix", c.sock)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "updated: listen %s: %v\n", c.sock, err)
-		os.Exit(1)
-	}
-	os.Chmod(c.sock, 0o660)
-
 	writeJSON := func(w http.ResponseWriter, s Status) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(s)
+		json.NewEncoder(w).Encode(clientStatus(s))
+	}
+	requireMethod := func(w http.ResponseWriter, r *http.Request, method string) bool {
+		if r.Method == method {
+			return true
+		}
+		w.Header().Set("Allow", method)
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return false
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, statuses.get())
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		writeJSON(w, statuses.getForClient())
 	})
 	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
-		st := pollOnce(c, false)
-		st = statuses.publishPoll(st)
-		writeJSON(w, st)
+		if !requireMethod(w, r, http.MethodGet) {
+			return
+		}
+		st, err := statuses.publishPoll(pollOnce(c))
+		if err != nil {
+			st.State = "error"
+			st.Error = err.Error()
+		}
+		writeJSON(w, statuses.advertise(st))
 	})
 	mux.HandleFunc("/download", func(w http.ResponseWriter, r *http.Request) {
-		if st, ok := statuses.claimDownload(); ok {
-			go download(st)
+		if !requireMethod(w, r, http.MethodPost) {
+			return
 		}
-		writeJSON(w, statuses.get())
+		query, queryErr := url.ParseQuery(r.URL.RawQuery)
+		token := ""
+		if values, ok := query["token"]; queryErr == nil && ok && len(query) == 1 && len(values) == 1 {
+			token = values[0]
+		}
+		if st, ok := statuses.claimDownload(token); ok {
+			go download(st)
+			writeJSON(w, statuses.get())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(clientStatus(statuses.get()))
 	})
 	mux.HandleFunc("/reboot", func(w http.ResponseWriter, r *http.Request) {
+		if !requireMethod(w, r, http.MethodPost) {
+			return
+		}
 		lock, err := claimReboot(c, &statuses)
 		if err != nil {
 			message := errNoStagedUpdate.Error()
@@ -472,6 +598,33 @@ func serve(c cfg) {
 			}
 		}()
 	})
+	go startupCheck(c, &statuses, 5*time.Second)
+	return &http.Server{Handler: mux}
+}
+
+// startupCheck retries initial signed checks briefly while networking settles.
+// Scheduled refreshes remain owned by updated-check.timer.
+func startupCheck(c cfg, statuses *statusStore, retryDelay time.Duration) {
+	const attempts = 3
+	for attempt := 0; attempt < attempts; attempt++ {
+		checked := pollOnce(c)
+		_, err := statuses.publishPoll(checked)
+		if err != nil || checked.State != "error" || !checked.retryable {
+			return
+		}
+		if attempt+1 < attempts {
+			time.Sleep(retryDelay)
+		}
+	}
+}
+
+// serve creates the unix socket before any network work, then starts the responder.
+func serve(c cfg) error {
+	ln, err := listenSocket(c.sock)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", c.sock, err)
+	}
+	defer ln.Close()
 	fmt.Fprintf(os.Stderr, "updated: serving %s (feed %s)\n", c.sock, c.feed)
-	http.Serve(ln, mux)
+	return newUpdateServer(c).Serve(ln)
 }

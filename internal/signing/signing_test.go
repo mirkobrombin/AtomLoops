@@ -62,14 +62,16 @@ func TestBuildManifestRoundTrip(t *testing.T) {
 	os.WriteFile(kc, []byte("UKI bytes v2"), 0o644)
 
 	out := filepath.Join(dir, "manifest.json")
-	if _, err := BuildManifest(out, ReleaseSpec{
+	spec := ReleaseSpec{
 		Version: "v2", MinVersion: "v1",
+		ProductName: "Sinty OS Event Horizon", ProductVersion: "26", ProductBuild: "26A010",
 		RootFSFile: rootfs, RootFSURL: "https://x/rootfs",
 		RootFSVerityHash:   "deadbeefcafe",
 		RootFSHashTreeFile: rootfs, RootFSHashTreeURL: "https://x/rootfs.hash",
 		KernelcacheFile: kc, KernelcacheURL: "https://x/kc",
 		KernelcacheSigFile: kc, KernelcacheSigURL: "https://x/kc.sig",
-	}); err != nil {
+	}
+	if _, err := BuildManifest(out, spec); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(out)
@@ -77,7 +79,7 @@ func TestBuildManifestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generated manifest does not parse: %v", err)
 	}
-	if m.Version != "v2" || m.MinVersion != "v1" {
+	if m.Version != "v2" || m.MinVersion != "v1" || m.ProductName != "Sinty OS Event Horizon" || m.ProductVersion != "26" || m.ProductBuild != "26A010" {
 		t.Errorf("versions wrong: %+v", m)
 	}
 	// The recorded hashes must match what the daemon's own verifier computes.
@@ -86,6 +88,10 @@ func TestBuildManifestRoundTrip(t *testing.T) {
 	}
 	if err := otad.VerifySHA256(kc, m.KernelcacheHash); err != nil {
 		t.Errorf("kernelcache hash mismatch: %v", err)
+	}
+	spec.ProductVersion = " 26"
+	if _, err := BuildManifest(out, spec); err == nil {
+		t.Error("invalid product metadata accepted")
 	}
 }
 

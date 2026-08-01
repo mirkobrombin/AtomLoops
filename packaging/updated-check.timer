@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodically check and fetch Sinty OS updates
+Description=Periodically check for Sinty OS updates
 
 [Timer]
 OnBootSec=3min
