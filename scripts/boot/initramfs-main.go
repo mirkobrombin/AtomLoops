@@ -11,6 +11,8 @@
 package main
 
 import (
+	"bufio"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -218,69 +220,193 @@ func parentDisk(dev string) string {
 func verityFail(reason string) {
 	fmt.Fprintf(os.Stderr, "\n[init] FATAL: root image failed dm-verity (%s).\n", reason)
 	fmt.Fprintln(os.Stderr, "[init] Refusing to mount a possibly-tampered rootfs. Powering off.")
+	powerOff()
+}
+
+func powerOff() {
 	syscall.Sync()
 	time.Sleep(3 * time.Second) // let the message reach the console
 	_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
 	select {} // unreachable: the machine is powering off
 }
 
-func setupVerity(sysMount string) string {
-	erofsFile := sysMount + "/boot/rootfs/rootfs-active.erofs"
-	hashFile := sysMount + "/boot/rootfs/rootfs-active.hash"
+type rootSlotPair struct {
+	name string
+	data string
+	hash string
+}
 
-	dataLoop := loopAttach(erofsFile)
-	if dataLoop == "" {
-		return ""
+func rootSlotPairs(sysMount string) []rootSlotPair {
+	var pairs []rootSlotPair
+	for _, name := range []string{"active", "next", "prev"} {
+		base := sysMount + "/boot/rootfs/rootfs-" + name
+		data, hash := base+".erofs", base+".hash"
+		if _, err := os.Stat(data); err != nil {
+			continue
+		}
+		if _, err := os.Stat(hash); err != nil {
+			continue
+		}
+		pairs = append(pairs, rootSlotPair{name: name, data: data, hash: hash})
+	}
+	return pairs
+}
+
+type openedRootSlot struct {
+	slot     rootSlotPair
+	dataLoop string
+	hashLoop string
+}
+
+type rootSlotOps struct {
+	attach         func(string) string
+	detach         func(string)
+	closeMapper    func()
+	openMapper     func(string, string, string) error
+	mapperHasEROFS func() bool
+}
+
+func mapperHasEROFS(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := f.ReadAt(magic[:], 1024); err != nil {
+		return false
+	}
+	return magic == [4]byte{0xe2, 0xe1, 0xf5, 0xe0}
+}
+
+func systemRootSlotOps() rootSlotOps {
+	return rootSlotOps{
+		attach: loopAttach,
+		detach: func(loop string) {
+			exec.Command(losetupBin(), "-d", loop).Run()
+		},
+		closeMapper: func() {
+			exec.Command("/sbin/veritysetup", "close", "atom-verity").Run()
+		},
+		openMapper: func(dataLoop, hashLoop, rootHash string) error {
+			cmd := exec.Command("/sbin/veritysetup", "open", dataLoop, "atom-verity", hashLoop, rootHash)
+			cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/lib")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("%v %s", err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		},
+		mapperHasEROFS: func() bool {
+			return mapperHasEROFS("/dev/mapper/atom-verity")
+		},
+	}
+}
+
+func cleanupRootSlot(opened openedRootSlot, ops rootSlotOps) {
+	ops.closeMapper()
+	if opened.hashLoop != "" {
+		ops.detach(opened.hashLoop)
+	}
+	if opened.dataLoop != "" {
+		ops.detach(opened.dataLoop)
+	}
+}
+
+func openVerifiedRootSlot(slot rootSlotPair, rootHash string, ops rootSlotOps) (openedRootSlot, string, bool) {
+	opened := openedRootSlot{slot: slot}
+	opened.dataLoop = ops.attach(slot.data)
+	if opened.dataLoop == "" {
+		return opened, "data device attach failed", false
+	}
+	opened.hashLoop = ops.attach(slot.hash)
+	if opened.hashLoop == "" {
+		ops.detach(opened.dataLoop)
+		return opened, "hash device attach failed", false
 	}
 
+	ops.closeMapper()
+	if err := ops.openMapper(opened.dataLoop, opened.hashLoop, rootHash); err != nil {
+		cleanupRootSlot(opened, ops)
+		return opened, err.Error(), false
+	}
+	// Opening the mapper only loads its table. Reading the filesystem magic forces
+	// dm-verity to validate the first data block before this slot is accepted.
+	if !ops.mapperHasEROFS() {
+		cleanupRootSlot(opened, ops)
+		return opened, "verified EROFS magic read failed", false
+	}
+	return opened, "", true
+}
+
+func findVerifiedRootSlot(pairs []rootSlotPair, rootHash string, ops rootSlotOps) (openedRootSlot, string, bool) {
+	var lastErr string
+	for _, slot := range pairs {
+		opened, reason, ok := openVerifiedRootSlot(slot, rootHash, ops)
+		if ok {
+			return opened, "", true
+		}
+		lastErr = slot.name + ": " + reason
+	}
+	return openedRootSlot{}, lastErr, false
+}
+
+func validRootHash(rootHash string) bool {
+	decoded, err := hex.DecodeString(rootHash)
+	return err == nil && len(decoded) == 32
+}
+
+func allowRawRoot(unlocked bool, rootHash string, verityAvailable bool) bool {
+	return unlocked && (!validRootHash(rootHash) || !verityAvailable)
+}
+
+func setupVerity(sysMount string, unlocked bool) string {
+	erofsFile := sysMount + "/boot/rootfs/rootfs-active.erofs"
 	rootHash := findRootHash()
-	if rootHash == "" || rootHash == "pending" {
-		fmt.Println("[init] ATOM_ROOT_HASH not set, mounting rootfs without dm-verity")
-		return dataLoop
+	if !validRootHash(rootHash) {
+		if !allowRawRoot(unlocked, rootHash, true) {
+			verityFail("ATOM_ROOT_HASH is absent or invalid")
+		}
+		fmt.Println("[init] unlocked: ATOM_ROOT_HASH is absent or invalid, mounting modified active root")
+		return loopAttach(erofsFile)
 	}
 	fmt.Printf("[init] root_hash: %s\n", rootHash)
 
 	// Bootloader-unlock escape hatch: a device the owner deliberately unlocked in
 	// recovery has its verity toggle turned off in the TPM. Honor that here, but
-	// ONLY when the TPM asserts BOTH facts (lock bit unlocked AND verity off). This
-	// is the single path that skips verity with a hash present, so it fails closed:
-	// a missing sintykey, an unreachable TPM, or either fact reading locked/on keeps
-	// full dm-verity enforcement.
-	if verityDisabledByUnlock() {
-		// Persistent per-boot notice: an unlocked device warns every time it boots.
-		fmt.Println("[init] ==================================================================")
-		fmt.Println("[init]  DEVICE UNLOCKED - verified boot is OFF, this system is not sealed")
-		fmt.Println("[init]  mounting the root image without dm-verity")
-		fmt.Println("[init] ==================================================================")
-		return dataLoop
-	}
-
+	// still use the signed UKI hash to select active, next, or previous root. The
+	// mapper is closed before the raw root is mounted, so owner modifications remain
+	// possible after selection.
 	if _, err := os.Stat("/sbin/veritysetup"); err != nil {
-		fmt.Println("[init] veritysetup missing, mounting unverified")
-		return dataLoop
-	}
-	hashLoop := loopAttach(hashFile)
-	if hashLoop == "" {
-		// a root hash is set but the hash tree can't be attached -> can't verify -> stop
-		verityFail("hash device attach failed")
-		return ""
+		if !allowRawRoot(unlocked, rootHash, false) {
+			verityFail("veritysetup is unavailable")
+		}
+		fmt.Println("[init] unlocked: veritysetup missing, mounting modified active root")
+		return loopAttach(erofsFile)
 	}
 
-	cmd := exec.Command("/sbin/veritysetup", "open", dataLoop, "atom-verity", hashLoop, rootHash)
-	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=/lib")
-	if o, err := cmd.CombinedOutput(); err != nil {
-		// open failure = hash mismatch = the rootfs was TAMPERED/corrupted. Fail CLOSED,
-		// never fall back to the raw device.
-		verityFail(fmt.Sprintf("veritysetup open failed: %v %s", err, strings.TrimSpace(string(o))))
-		return ""
+	ops := systemRootSlotOps()
+	opened, lastErr, ok := findVerifiedRootSlot(rootSlotPairs(sysMount), rootHash, ops)
+	if ok {
+		fmt.Printf("[init] selected UKI-matching root slot %s\n", opened.slot.name)
+		if unlocked {
+			ops.closeMapper()
+			ops.detach(opened.hashLoop)
+			fmt.Println("[init] ==================================================================")
+			fmt.Println("[init]  DEVICE UNLOCKED - verified boot is OFF, this system is not sealed")
+			fmt.Println("[init]  mounting the root image without dm-verity")
+			fmt.Println("[init] ==================================================================")
+			return opened.dataLoop
+		}
+		fmt.Println("[init] dm-verity active on /dev/mapper/atom-verity")
+		return "/dev/mapper/atom-verity"
 	}
-	verityDev := "/dev/mapper/atom-verity"
-	if _, err := os.Stat(verityDev); err != nil {
-		verityFail(fmt.Sprintf("%s missing after open", verityDev))
-		return ""
+
+	if unlocked {
+		fmt.Println("[init] unlocked: no UKI-matching root slot, using modified active root")
+		return loopAttach(erofsFile)
 	}
-	fmt.Printf("[init] dm-verity active on %s\n", verityDev)
-	return verityDev
+	verityFail("no root slot matches signed UKI hash: " + lastErr)
+	return ""
 }
 
 // sintykeyBinPath finds the crypto CLI that reads the TPM lock bit and verity
@@ -457,14 +583,30 @@ func mountVar(rootMount, rootDev string) bool {
 	return false
 }
 
-func dropToShell() {
-	fmt.Println("[init] dropping to /bin/sh for debug")
+func debugShellAuthorized(unlocked bool, confirmation string) bool {
+	return unlocked && strings.TrimSpace(confirmation) == "OPEN DEBUG SHELL"
+}
+
+func debugShellOrPowerOff(reason string, unlocked bool) {
+	fmt.Fprintf(os.Stderr, "[init] boot failed: %s\n", reason)
+	if !unlocked {
+		fmt.Fprintln(os.Stderr, "[init] device is locked; refusing a debug shell")
+		powerOff()
+	}
+	fmt.Fprintln(os.Stderr, "[init] DEVICE UNLOCKED. Type OPEN DEBUG SHELL to start a root shell:")
+	confirmation, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil || !debugShellAuthorized(unlocked, confirmation) {
+		fmt.Fprintln(os.Stderr, "[init] debug shell confirmation denied")
+		powerOff()
+	}
+	fmt.Println("[init] starting confirmed debug shell")
 	cmd := exec.Command("/bin/sh")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	time.Sleep(1 * time.Second)
 	cmd.Run()
+	powerOff()
 }
 
 func readDeployment(path, backup string) (Deployment, error) {
@@ -491,11 +633,11 @@ func main() {
 
 	fmt.Println("[init] loading kernel modules")
 	loadKernelModules()
+	unlocked := verityDisabledByUnlock()
 
 	sysMount, sysDev, ok := mountSystem()
 	if !ok {
-		fmt.Fprintf(os.Stderr, "[init] no Atom Loops system partition found\n")
-		dropToShell()
+		debugShellOrPowerOff("no Atom Loops system partition found", unlocked)
 		return
 	}
 
@@ -511,18 +653,16 @@ func main() {
 		}
 	}
 
-	verityDev := setupVerity(sysMount)
+	verityDev := setupVerity(sysMount, unlocked)
 	if verityDev == "" {
-		fmt.Fprintf(os.Stderr, "[init] could not prepare rootfs image\n")
-		dropToShell()
+		debugShellOrPowerOff("could not prepare rootfs image", unlocked)
 		return
 	}
 
 	rootMount := "/newroot"
 	os.MkdirAll(rootMount, 0755)
 	if syscall.Mount(verityDev, rootMount, "erofs", syscall.MS_RDONLY, "") != nil {
-		fmt.Fprintf(os.Stderr, "[init] mounting EROFS root failed\n")
-		dropToShell()
+		debugShellOrPowerOff("mounting EROFS root failed", unlocked)
 		return
 	}
 	fmt.Printf("[init] mounted verified EROFS root on %s\n", rootMount)
@@ -568,8 +708,7 @@ func main() {
 
 	fmt.Println("[init] switching root")
 	if err := syscall.Chroot(rootMount); err != nil {
-		fmt.Fprintf(os.Stderr, "[init] chroot failed: %v\n", err)
-		dropToShell()
+		debugShellOrPowerOff(fmt.Sprintf("chroot failed: %v", err), unlocked)
 		return
 	}
 	os.Chdir("/")
@@ -582,6 +721,5 @@ func main() {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "[init] no init found\n")
-	dropToShell()
+	debugShellOrPowerOff("no init found", unlocked)
 }
