@@ -449,7 +449,7 @@ func TestUnixServerChecksThenDownloadsOnlyOnPost(t *testing.T) {
 	}
 	c := cfg{
 		feed: feed, current: "v1", state: filepath.Join(work, "run", "updated", "status.json"),
-		sock: filepath.Join(work, "run", "updated.sock"), wal: wal,
+		sock: socketPath(t, work), wal: wal,
 		rootfsDir: filepath.Join(work, "rootfs"), espDir: filepath.Join(work, "esp"),
 		firmwareDir: filepath.Join(work, "firmware"), stageLock: filepath.Join(work, "run", "updated-stage.lock"),
 	}
@@ -680,4 +680,17 @@ func TestDownloadRejectsFeedChangedSinceCheck(t *testing.T) {
 	if ready.Latest != "v3" || ready.ProductVersion != "26.1" || ready.ProductBuild != "26A011" {
 		t.Fatalf("ready status = %+v, want staged internal v3 public 26.1 build 26A011", ready)
 	}
+}
+
+func socketPath(t *testing.T, work string) string {
+	path := filepath.Join(work, "run", "updated.sock")
+	if len(path) < 100 {
+		return path
+	}
+	dir, err := os.MkdirTemp(os.Getenv("XDG_RUNTIME_DIR"), "al")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "run", "updated.sock")
 }

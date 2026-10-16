@@ -119,7 +119,7 @@ func BootSuccess(walPath, healthDir string, store CounterStore, dirs StageDirs) 
 		d.RootFS.PendingHash != "" &&
 		bi.VerityHash == d.RootFS.PendingHash &&
 		bi.Version != "" &&
-		bi.Version == d.RootFS.Pending
+		sameRelease(bi.Version, d.RootFS.Pending)
 	if !identityConfirmed {
 		d.Kernelcache.StableBoots = 0
 		reconciled := false
@@ -368,4 +368,8 @@ func Status(walPath string) (string, error) {
 		}
 	}
 	return b.String(), nil
+}
+
+func sameRelease(a, b string) bool {
+	return strings.TrimPrefix(a, "v") == strings.TrimPrefix(b, "v")
 }
