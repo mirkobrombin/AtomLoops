@@ -54,6 +54,7 @@ func MountEarly() {
 	syscall.Mount("proc", "/proc", "proc", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "")
 	syscall.Mount("sysfs", "/sys", "sysfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "")
 	syscall.Mount("devtmpfs", "/dev", "devtmpfs", syscall.MS_NOSUID, "mode=0755")
+	LinkStandardDevices("/dev")
 	if f, err := os.OpenFile("/dev/console", os.O_RDWR, 0); err == nil {
 		for fd := 0; fd <= 2; fd++ {
 			syscall.Dup3(int(f.Fd()), fd, 0)
@@ -69,6 +70,21 @@ func MountEarly() {
 				syscall.Mknod("/dev/mapper/control", syscall.S_IFCHR|0600, major<<8|minor&0xff|(minor&^0xff)<<12)
 			}
 		}
+	}
+}
+
+// LinkStandardDevices creates the links a devtmpfs does not carry: /dev/fd
+// and the three standard streams, all resolved through /proc/self/fd.
+// Existing entries are left alone.
+func LinkStandardDevices(dev string) {
+	links := [][2]string{
+		{"fd", "/proc/self/fd"},
+		{"stdin", "/proc/self/fd/0"},
+		{"stdout", "/proc/self/fd/1"},
+		{"stderr", "/proc/self/fd/2"},
+	}
+	for _, l := range links {
+		os.Symlink(l[1], filepath.Join(dev, l[0]))
 	}
 }
 

@@ -3,6 +3,8 @@ package boot
 import (
 	"encoding/binary"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -345,5 +347,20 @@ func TestLiveRootReleasesAnUnrelatedInstall(t *testing.T) {
 	m3 := Media{DataDev: "/dev/nvme0n1p2"}
 	if _, err := ReleaseUnrelatedData(Config{Live: true}, &m3, &Root{Data: "/dev/sdb2"}, f3.ops()); err == nil {
 		t.Error("a data partition that cannot be released must stop the boot")
+	}
+}
+
+func TestLinkStandardDevices(t *testing.T) {
+	dev := t.TempDir()
+	if err := os.Symlink("/elsewhere", filepath.Join(dev, "stdin")); err != nil {
+		t.Fatal(err)
+	}
+	LinkStandardDevices(dev)
+	want := map[string]string{"fd": "/proc/self/fd", "stdin": "/elsewhere", "stdout": "/proc/self/fd/1", "stderr": "/proc/self/fd/2"}
+	for name, target := range want {
+		got, err := os.Readlink(filepath.Join(dev, name))
+		if err != nil || got != target {
+			t.Errorf("%s -> %q (%v), want %q", name, got, err, target)
+		}
 	}
 }
