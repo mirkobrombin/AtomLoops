@@ -694,3 +694,24 @@ func socketPath(t *testing.T, work string) string {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	return filepath.Join(dir, "run", "updated.sock")
 }
+
+func TestInstalledVersionCountsStagedCandidate(t *testing.T) {
+	dir := t.TempDir()
+	wal := filepath.Join(dir, "deployment.json")
+	cases := []struct {
+		body string
+		want string
+	}{
+		{`{"rootfs":{"current":"v183"}}`, "v183"},
+		{`{"rootfs":{"current":"v183","pending":"v184"}}`, "v184"},
+		{`{"rootfs":{"current":"v184","pending":"v183"}}`, "v184"},
+	}
+	for _, c := range cases {
+		if err := os.WriteFile(wal, []byte(c.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := installedVersion(wal); got != c.want {
+			t.Errorf("%s: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}

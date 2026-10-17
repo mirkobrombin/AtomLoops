@@ -225,8 +225,10 @@ func check(feed, current, wal string) Status {
 	return st
 }
 
-// installedVersion reads the running rootfs version from the deployment WAL if present,
-// else falls back to os-release VERSION_ID, else "unknown".
+// installedVersion reads the installed rootfs version from the deployment WAL if present,
+// else falls back to os-release VERSION_ID, else "unknown". A staged candidate that is
+// newer than current counts as installed, so the same release is not offered again
+// while it is being stabilized.
 func installedVersion(wal string) string {
 	if wal == "" {
 		wal = defaultWAL
@@ -235,9 +237,13 @@ func installedVersion(wal string) string {
 		var d struct {
 			RootFS struct {
 				Current string `json:"current"`
+				Pending string `json:"pending"`
 			} `json:"rootfs"`
 		}
 		if json.Unmarshal(b, &d) == nil && d.RootFS.Current != "" {
+			if d.RootFS.Pending != "" && newer(d.RootFS.Pending, d.RootFS.Current) {
+				return d.RootFS.Pending
+			}
 			return d.RootFS.Current
 		}
 	}
