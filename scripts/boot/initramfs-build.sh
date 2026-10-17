@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-SRC="scripts/boot/initramfs-main.go"
+SRC="./cmd/atom-init"
 OUT="out/initramfs.cpio.gz"
 VOID_ROOTFS="out/void-rootfs"
 VOID_MODS="${VOID_ROOTFS}/usr/lib/modules/6.12.82_1"
@@ -37,65 +37,9 @@ if [ -n "${BB}" ]; then
     echo "[initramfs-build] copying busybox from ${BB}"
     cp "${BB}" out/initramfs-staging/bin/busybox
     chmod +x out/initramfs-staging/bin/busybox
-    for applet in sh modprobe insmod rmmod mount umount mkdir mknod ln ls reboot poweroff halt losetup; do
+    for applet in sh; do
         ln -sf busybox "out/initramfs-staging/bin/${applet}" &>/dev/null || true
     done
-fi
-
-# Copy veritysetup, losetup and all their musl shared libs from Void rootfs.
-DST_LIB="out/initramfs-staging/lib"
-copy_void_lib() {
-    local src="$1"
-    local dst_dir="$2"
-    local real=$(readlink -f "${src}")
-    [ ! -f "$real" ] && return 1
-    local real_name=$(basename "$real")
-    local link_name=$(basename "${src}")
-    [ ! -f "${dst_dir}/${real_name}" ] && cp "${real}" "${dst_dir}/${real_name}"
-    [ "$link_name" != "$real_name" ] && [ ! -e "${dst_dir}/${link_name}" ] && \
-        ln -sf "${real_name}" "${dst_dir}/${link_name}"
-    return 0
-}
-
-if [ -d "${VOID_ROOTFS}" ]; then
-    echo "[initramfs-build] using Void musl binaries for dm-verity"
-
-    for bin in veritysetup losetup; do
-        for dir in usr/sbin usr/bin sbin bin; do
-            if [ -f "${VOID_ROOTFS}/${dir}/${bin}" ]; then
-                cp "${VOID_ROOTFS}/${dir}/${bin}" "out/initramfs-staging/sbin/${bin}"
-                chmod 755 "out/initramfs-staging/sbin/${bin}"
-                echo "[initramfs-build] copied ${bin} from Void"
-                break
-            fi
-        done
-    done
-
-    copy_void_lib "${VOID_ROOTFS}/lib/libc.so" "${DST_LIB}" || \
-    copy_void_lib "${VOID_ROOTFS}/usr/lib/libc.so" "${DST_LIB}" || true
-
-    for lib_name in \
-        libcryptsetup.so.12 \
-        libpopt.so.0 \
-        libblkid.so.1 \
-        libuuid.so.1 \
-        libdevmapper.so.1.02 \
-        libcrypto.so.3 \
-        libjson-c.so.5 \
-        libudev.so.1 \
-        libsmartcols.so.1; do
-        for vlib in "${VOID_ROOTFS}/lib/${lib_name}"* "${VOID_ROOTFS}/usr/lib/${lib_name}"*; do
-            [ -e "$vlib" ] || [ -L "$vlib" ] || continue
-            copy_void_lib "$vlib" "${DST_LIB}" || true
-        done
-    done
-
-    ln -sf libc.so out/initramfs-staging/lib/ld-musl-x86_64.so.1
-    mkdir -p out/initramfs-staging/lib64
-    ln -sf ../lib/ld-musl-x86_64.so.1 out/initramfs-staging/lib64/ld-linux-x86-64.so.2
-    echo "[initramfs-build] set up musl dynamic linker"
-else
-    echo "[initramfs-build] WARNING: Void rootfs not found, dm-verity tools skipped"
 fi
 
 # Embed the dm-verity hash tree inside the initramfs.

@@ -80,8 +80,9 @@ cd loader && sh build.sh   # BOOTX64.EFI (needs zig 0.16)
   anti-rollback, recovery.
 - `internal/trust` + `internal/signing` + `cmd/atom-sign` - the two-level key
   chain (root cert, signing key, manifest) and the release tooling.
-- `scripts/boot/initramfs-main.go` - the early-boot engine: dm-verity setup and
-  the atomic switch before switch_root.
+- `boot` + `cmd/atom-init` - the early-boot engine and its reference init:
+  root selection by the signed dm-verity hash, the /var layout, verified
+  firmware bundles and the switch to the real init.
 - `loader/` - the Zig UEFI loader: boot-slot selection and signature
   verification before chainloading the kernelcache.
 

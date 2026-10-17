@@ -11,7 +11,7 @@ UEFI loader. The Go code builds `atomd` and `atom-sign`; the loader is Zig.
 | Deployment WAL | `internal/deployment` | The `deployment.json` write-ahead log, the single source of truth for slot state. |
 | OTA daemon | `internal/otad` + `cmd/atomd` | Boot confirmation, staging, anti-rollback reconciliation, recovery entry. |
 | Trust and signing | `internal/trust` + `internal/signing` + `cmd/atom-sign` | The two-level key chain (root, signing certificate, manifest) and the release tooling. |
-| Initramfs engine | `scripts/boot/initramfs-main.go` | dm-verity setup and the atomic switch before `switch_root`. |
+| Initramfs engine | `boot`, `cmd/atom-init` | Root selection by the signed dm-verity hash, the `/var` layout, verified firmware and the switch to the real init. |
 | UEFI loader | `loader/` | Boot-slot selection and signature verification before chainloading the kernelcache. |
 
 ## The daemon (`atomd`)
@@ -31,10 +31,17 @@ for the chain it builds.
 
 ## The initramfs engine
 
-`scripts/boot/initramfs-main.go` is compiled into the initramfs. It runs before
-`switch_root`: it sets up dm-verity for the target root and performs the atomic
-slot switch, and it never falls back to a raw, unverified device. It is the last
-gate before the real system takes over.
+The `boot` package is the early-boot engine and `cmd/atom-init` is the
+reference init built on it. It runs before the real init: it finds the root slot
+whose dm-verity tree matches the root hash of the signed kernel command line,
+sets up loop devices and dm-verity through the kernel interfaces directly, lays
+out the persistent `/var`, unions the verified firmware bundles and switches to
+the real init. A locked device never falls back to a raw, unverified root. It is
+the last gate before the real system takes over.
+
+A distribution may ship `atom-init` as is or write its own init, but that init
+uses the `boot` package: the root selection and the `/var` isolation it enforces
+are the Atom Loops boot contract, and its tests pin that contract.
 
 ## The loader
 

@@ -9,6 +9,5 @@ out/
 # private signing keys must never be committed
 *.key
 root.key
-/boot
 /fw-verify
 /scripts/boot/boot
