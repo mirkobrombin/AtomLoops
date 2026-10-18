@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -66,6 +67,8 @@ type Ops struct {
 	CloseVerity  func(name string) error
 	HasEROFS     func(dev string) bool
 	IsVerityHash func(dev string) bool
+	HashRoot     func(dev string) (string, uint64)
+	DevBytes     func(dev string) uint64
 	MountISO     func(dev, dir string) bool
 	DiskOf       func(dev string) string
 	Sleep        func(time.Duration)
@@ -93,11 +96,19 @@ func SystemOps() Ops {
 			_, err := os.Stat(p)
 			return err == nil
 		},
-		AttachLoop:   AttachLoop,
-		DetachLoop:   DetachLoop,
-		OpenVerity:   OpenVerity,
-		CloseVerity:  CloseVerity,
-		HasEROFS:     HasEROFS,
+		AttachLoop:  AttachLoop,
+		DetachLoop:  DetachLoop,
+		OpenVerity:  OpenVerity,
+		CloseVerity: CloseVerity,
+		HasEROFS:    HasEROFS,
+		HashRoot: func(dev string) (string, uint64) {
+			root, sb, err := VerityRootHash(dev)
+			if err != nil {
+				return "", 0
+			}
+			return root, sb.DataBlocks * uint64(sb.DataBlockSize)
+		},
+		DevBytes:     DevBytes,
 		IsVerityHash: IsVerityHash,
 		MountISO: func(dev, dir string) bool {
 			os.MkdirAll(dir, 0755)
@@ -275,23 +286,61 @@ func selectVerified(cfg *Config, m *Media, ops Ops) *Root {
 	} else {
 		datas, hashes = m.SlotDatas, m.SlotHashes
 	}
-	for _, d := range datas {
-		for _, h := range hashes {
-			if !samePairOrigin(m, ops, d, h) {
-				continue
-			}
-			ops.CloseVerity(RootMapper)
-			node, err := ops.OpenVerity(RootMapper, d, h, cfg.RootHash)
-			if err != nil {
-				continue
-			}
-			if ops.HasEROFS(node) {
-				return &Root{Source: node, Data: d, Hash: h, Mapper: RootMapper}
-			}
-			ops.CloseVerity(RootMapper)
+	for _, pair := range rankPairs(cfg, ops, datas, hashes) {
+		d, h := pair[0], pair[1]
+		if !samePairOrigin(m, ops, d, h) {
+			continue
 		}
+		ops.CloseVerity(RootMapper)
+		node, err := ops.OpenVerity(RootMapper, d, h, cfg.RootHash)
+		if err != nil {
+			continue
+		}
+		if ops.HasEROFS(node) {
+			return &Root{Source: node, Data: d, Hash: h, Mapper: RootMapper}
+		}
+		ops.CloseVerity(RootMapper)
 	}
 	return nil
+}
+
+// rankPairs orders the data and hash pairs so the one the signed root hash
+// names is mapped first. A trial boot keeps two slots side by side, and mapping
+// the wrong pair first leaves a failed mapping that must be torn down before
+// the right one can take its name. Pairs whose hash device names another root
+// stay last, so an unreadable or unknown device is still tried.
+func rankPairs(cfg *Config, ops Ops, datas, hashes []string) [][2]string {
+	type ranked struct {
+		pair  [2]string
+		score int
+	}
+	var all []ranked
+	for _, h := range hashes {
+		root, want := "", uint64(0)
+		if ops.HashRoot != nil {
+			root, want = ops.HashRoot(h)
+		}
+		for _, d := range datas {
+			score := 1
+			switch {
+			case root == "":
+			case strings.EqualFold(root, cfg.RootHash):
+				score = 3
+			default:
+				score = 0
+			}
+			if score > 0 && want > 0 && ops.DevBytes != nil && ops.DevBytes(d) == want {
+				score++
+			}
+			all = append(all, ranked{[2]string{d, h}, score})
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].score > all[j].score })
+	out := make([][2]string, len(all))
+	for i, r := range all {
+		out[i] = r.pair
+	}
+	return out
 }
 
 func samePairOrigin(m *Media, ops Ops, data, hash string) bool {

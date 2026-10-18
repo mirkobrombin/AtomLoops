@@ -2,14 +2,17 @@ package boot
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -73,6 +76,33 @@ func ParseVeritySuperblock(buf []byte) (*VeritySuperblock, error) {
 	}
 	sb.Salt = append([]byte(nil), buf[88:88+saltSize]...)
 	return sb, nil
+}
+
+// VerityRootHash computes the root hash of a hash device from its top level
+// block, without the kernel. It only selects which hash device to map: the
+// mapping itself still checks every block against the signed root hash.
+func VerityRootHash(hashDev string) (string, *VeritySuperblock, error) {
+	f, err := os.Open(hashDev)
+	if err != nil {
+		return "", nil, err
+	}
+	defer f.Close()
+	head := make([]byte, 512)
+	if _, err := f.ReadAt(head, 0); err != nil {
+		return "", nil, err
+	}
+	sb, err := ParseVeritySuperblock(head)
+	if err != nil {
+		return "", nil, err
+	}
+	top := make([]byte, sb.HashBlockSize)
+	if _, err := f.ReadAt(top, int64(sb.HashBlockSize)); err != nil {
+		return "", nil, err
+	}
+	h := sha256.New()
+	h.Write(sb.Salt)
+	h.Write(top)
+	return hex.EncodeToString(h.Sum(nil)), sb, nil
 }
 
 // ValidRootHash reports whether h is a sha256 root hash in hex.
@@ -225,10 +255,30 @@ func OpenVerity(name, dataDev, hashDev, rootHash string) (string, error) {
 // does not exist is not an error.
 func CloseVerity(name string) error {
 	os.Remove(filepath.Join("/dev/mapper", name))
-	if _, err := dmCall(dmDevRemove, name, 0, nil, 0); err != nil && err != syscall.ENXIO {
-		return err
+	var err error
+	for i := 0; i < 40; i++ {
+		if _, err = dmCall(dmDevRemove, name, 0, nil, 0); err == nil || err == syscall.ENXIO {
+			return nil
+		}
+		if err != syscall.EBUSY {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	return nil
+	return err
+}
+
+// DevBytes is the size of a block device in bytes, 0 when it cannot be read.
+func DevBytes(dev string) uint64 {
+	b, err := os.ReadFile(filepath.Join("/sys/class/block", filepath.Base(dev), "size"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n * 512
 }
 
 // HasEROFS reports whether the device starts with an EROFS superblock. On a

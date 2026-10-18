@@ -524,20 +524,38 @@ fn pollKey(window_ms: usize) bool {
 // to policy: recovery is always offered as the safe floor; a manual pick does not pin.
 fn runChooser() []const u8 {
     puts("[chooser] 1=active  2=prev  3=recovery\r\n");
-    const con_in = uefi.system_table.con_in orelse return "kernelcache-active.efi";
     const bs = uefi.system_table.boot_services;
+    const ex: ?*uefi.protocol.SimpleTextInputEx = if (bs) |b|
+        b.locateProtocol(uefi.protocol.SimpleTextInputEx, null) catch null
+    else
+        null;
     var tries: usize = 0;
     while (tries < 240) : (tries += 1) {
-        if (con_in.readKeyStroke()) |k| {
-            switch (k.unicode_char) {
+        if (readChar(ex)) |c| {
+            switch (c) {
+                '1', '\r', '\n' => return "kernelcache-active.efi",
                 '2' => return "kernelcache-prev.efi",
                 '3' => return "kernelcache-recovery.efi",
-                else => return "kernelcache-active.efi",
+                else => {},
             }
-        } else |_| {}
+        }
         if (bs) |b| b.stall(50 * 1000) catch {};
     }
+    puts("[chooser] no choice, starting active\r\n");
     return "kernelcache-active.efi";
+}
+
+fn readChar(ex: ?*uefi.protocol.SimpleTextInputEx) ?u16 {
+    if (ex) |exp| {
+        if (exp.readKeyStroke()) |k| {
+            if (k.input.unicode_char != 0) return k.input.unicode_char;
+        } else |_| {}
+    }
+    const con_in = uefi.system_table.con_in orelse return null;
+    if (con_in.readKeyStroke()) |k| {
+        if (k.unicode_char != 0) return k.unicode_char;
+    } else |_| {}
+    return null;
 }
 
 pub fn main() void {
