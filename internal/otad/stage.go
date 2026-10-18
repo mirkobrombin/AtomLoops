@@ -281,6 +281,17 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	if err := d.Save(walPath); err != nil {
 		return "", err
 	}
+	for _, dir := range []string{dirs.Rootfs, dirs.Firmware, filepath.Dir(walPath), dirs.ESP} {
+		if dir == "" {
+			continue
+		}
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		if err := commitDir(dir); err != nil {
+			return "", fmt.Errorf("staged %s but committing %s failed: %w", m.Version, dir, err)
+		}
+	}
 	// Arm the ESP boot-state so the loader boots the -next slot on the trial budget.
 	if err := SyncBootState(walPath, dirs); err != nil {
 		return "", fmt.Errorf("staged %s but arming boot-state failed: %w", m.Version, err)

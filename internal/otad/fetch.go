@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/mirkobrombin/go-foundation/pkg/httpx"
@@ -92,6 +93,9 @@ func FetchTo(ctx context.Context, url, dest string) (int64, error) {
 	f.Close()
 	if err := os.Rename(tmp, dest); err != nil {
 		os.Remove(tmp)
+		return 0, err
+	}
+	if err := syncDir(filepath.Dir(dest)); err != nil {
 		return 0, err
 	}
 	return n, nil
