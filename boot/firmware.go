@@ -38,11 +38,7 @@ func MountFirmware(rootPubPath string) {
 	release := kernelRelease()
 	var firmware []*mountedBundle
 	overlays := map[string]*mountedBundle{}
-	dirs, _ := filepath.Glob(fwroot + "/*/")
-	for _, dir := range dirs {
-		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-			continue
-		}
+	for _, dir := range bundleDirs(fwroot) {
 		name := filepath.Base(dir)
 		img, hash := dir+"/firmware-active.img", dir+"/firmware-active.hash"
 		if !exists(img) {
@@ -95,6 +91,20 @@ func MountFirmware(rootPubPath string) {
 		applyOverlay(b)
 	}
 	unionFirmware(firmware)
+}
+
+func bundleDirs(root string) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() {
+			dirs = append(dirs, filepath.Join(root, e.Name()))
+		}
+	}
+	return dirs
 }
 
 type mountedBundle struct {

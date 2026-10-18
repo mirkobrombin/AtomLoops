@@ -63,3 +63,19 @@ func TestOverlayWanted(t *testing.T) {
 		t.Error("an unreadable root version must fail closed")
 	}
 }
+
+func TestBundleDirs(t *testing.T) {
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "amd"), 0o755)
+	os.MkdirAll(filepath.Join(root, "singularity-framework"), 0o755)
+	os.WriteFile(filepath.Join(root, "stray-file"), []byte("x"), 0o644)
+	os.Symlink(filepath.Join(root, "amd"), filepath.Join(root, "link"))
+	got := bundleDirs(root)
+	want := []string{filepath.Join(root, "amd"), filepath.Join(root, "singularity-framework")}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("bundleDirs = %v, want %v", got, want)
+	}
+	if bundleDirs(filepath.Join(root, "missing")) != nil {
+		t.Fatal("a missing firmware dir must give no bundles")
+	}
+}
