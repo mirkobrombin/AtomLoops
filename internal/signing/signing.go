@@ -134,6 +134,9 @@ type ReleaseSpec struct {
 	KernelcacheFile, KernelcacheURL string
 	// KernelcacheSigFile is the loader's Ed25519 signature over KernelcacheFile.
 	KernelcacheSigFile, KernelcacheSigURL string
+
+	LoaderFile, LoaderURL       string
+	LoaderSigFile, LoaderSigURL string
 }
 
 func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, error) {
@@ -177,6 +180,29 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 		KernelcacheHash:    kh,
 		KernelcacheSigURL:  r.KernelcacheSigURL,
 		KernelcacheSigHash: ksh,
+	}
+	if r.LoaderFile != "" {
+		if r.LoaderURL == "" || r.LoaderSigFile == "" || r.LoaderSigURL == "" {
+			return "", fmt.Errorf("manifest: boot loader needs its URL, signature and signature URL")
+		}
+		img, err := os.ReadFile(r.LoaderFile)
+		if err != nil {
+			return "", fmt.Errorf("read boot loader: %w", err)
+		}
+		v := otad.LoaderVersionOf(img)
+		if v < 2 {
+			return "", fmt.Errorf("manifest: boot loader carries no version marker")
+		}
+		lh, err := hashFile(r.LoaderFile)
+		if err != nil {
+			return "", fmt.Errorf("hash boot loader: %w", err)
+		}
+		lsh, err := hashFile(r.LoaderSigFile)
+		if err != nil {
+			return "", fmt.Errorf("hash boot loader signature: %w", err)
+		}
+		m.LoaderVersion, m.LoaderURL, m.LoaderHash = v, r.LoaderURL, lh
+		m.LoaderSigURL, m.LoaderSigHash = r.LoaderSigURL, lsh
 	}
 	// A single unnamed bundle uses the legacy single-firmware fields (back-compat);
 	// any named or multiple bundles use the firmware_bundles array.

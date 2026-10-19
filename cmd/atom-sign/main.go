@@ -184,6 +184,10 @@ func run(args []string) int {
 		fwHashTreeURL := fs.String("firmware-hashtree-url", "", "URL the device will fetch the firmware hash tree from")
 		fwVersion := fs.Int("firmware-version", 0, "firmware track version")
 		fwMinVersion := fs.Int("firmware-min-version", 0, "firmware anti-rollback floor")
+		loader := fs.String("loader", "", "optional signed boot loader image")
+		loaderURL := fs.String("loader-url", "", "URL the device will fetch the boot loader from")
+		loaderSig := fs.String("loader-sig", "", "boot loader signature file")
+		loaderSigURL := fs.String("loader-sig-url", "", "URL the device will fetch the boot loader signature from")
 		var bundles bundleList
 		fs.Var(&bundles, "bundle", "repeatable multi-bundle spec (name=..,img=..,url=..,verity=..,hashtree=..,hashtree-url=..,version=..); supersedes --firmware")
 		if err := fs.Parse(rest); err != nil {
@@ -226,6 +230,8 @@ func run(args []string) int {
 			RootFSHashTreeFile: *rootfsHT, RootFSHashTreeURL: *rootfsHTURL,
 			KernelcacheFile: *kc, KernelcacheURL: *kcURL,
 			KernelcacheSigFile: *kcSig, KernelcacheSigURL: *kcSigURL,
+			LoaderFile: *loader, LoaderURL: *loaderURL,
+			LoaderSigFile: *loaderSig, LoaderSigURL: *loaderSigURL,
 		}, fwSpec...)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "atom-sign:", err)
