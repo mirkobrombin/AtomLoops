@@ -16,10 +16,11 @@ var loaderAutoFlag = "/var/lib/sinty/loader-auto"
 
 type loaderStatus struct {
 	otad.LoaderStatus
-	Available int    `json:"available,omitempty"`
-	Auto      bool   `json:"auto"`
-	Message   string `json:"message,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Boot      otad.BootInfo `json:"boot"`
+	Available int           `json:"available,omitempty"`
+	Auto      bool          `json:"auto"`
+	Message   string        `json:"message,omitempty"`
+	Error     string        `json:"error,omitempty"`
 }
 
 func loaderAuto() bool {
@@ -72,6 +73,7 @@ func registerLoaderHandlers(mux *http.ServeMux, c cfg, statuses *statusStore) {
 	current := func() loaderStatus {
 		return loaderStatus{
 			LoaderStatus: otad.ReadLoaderStatus(otad.StageDirs{ESP: c.espDir}),
+			Boot:         otad.ReadBootInfo(otad.StageDirs{ESP: c.espDir}),
 			Available:    statuses.get().LoaderAvailable,
 			Auto:         loaderAuto(),
 		}

@@ -260,3 +260,31 @@ func TestSystemStageCancelsLoaderCandidate(t *testing.T) {
 		t.Fatal("system update left the loader candidate marker over its kernelcache")
 	}
 }
+
+func TestReadBootInfo(t *testing.T) {
+	dirs := loaderDirs(t, []byte("MZ old"))
+	os.WriteFile(filepath.Join(dirs.ESP, "kernelcache-active.efi"), []byte("not a pe"), 0o644)
+	os.WriteFile(filepath.Join(dirs.ESP, "kernelcache-next.efi"), loaderImage("2"), 0o644)
+	os.WriteFile(filepath.Join(dirs.ESP, loaderCandidateFile), []byte("version=2\n"), 0o644)
+	WriteBootState(filepath.Join(dirs.ESP, "boot-state"), BootState{Target: "next", Trial: true, Attempts: 1})
+	info := ReadBootInfo(dirs)
+	if info.Target != "next" || !info.Trial {
+		t.Fatalf("boot info = %+v", info)
+	}
+	if info.Slots["active"] != "present" || info.Slots["next"] != "loader 2" {
+		t.Fatalf("slots = %+v", info.Slots)
+	}
+	if _, ok := info.Slots["recovery"]; ok {
+		t.Fatal("missing recovery slot reported")
+	}
+}
+
+func TestKernelcacheVersionReadsRealImage(t *testing.T) {
+	p := os.Getenv("ATOM_TEST_KERNELCACHE")
+	if p == "" {
+		t.Skip("ATOM_TEST_KERNELCACHE not set")
+	}
+	if v := KernelcacheVersion(p); !strings.HasPrefix(v, "v") {
+		t.Fatalf("KernelcacheVersion = %q", v)
+	}
+}

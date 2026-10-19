@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"debug/pe"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -287,4 +288,60 @@ func RepairLoader(dirs StageDirs, image, sig, rootPub []byte) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("loader: version %d installed", LoaderVersionOf(image)), nil
+}
+
+func KernelcacheVersion(path string) string {
+	f, err := pe.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	if s := f.Section(".atomver"); s != nil {
+		if b, err := s.Data(); err == nil {
+			if v := strings.Trim(string(b), "\x00 \n"); v != "" {
+				return "v" + strings.TrimPrefix(v, "v")
+			}
+		}
+	}
+	if s := f.Section(".cmdline"); s != nil {
+		if b, err := s.Data(); err == nil {
+			for _, arg := range strings.Fields(strings.Trim(string(b), "\x00")) {
+				if v, ok := strings.CutPrefix(arg, "atom.version="); ok {
+					return v
+				}
+			}
+		}
+	}
+	return ""
+}
+
+type BootInfo struct {
+	Target string            `json:"target"`
+	Trial  bool              `json:"trial"`
+	Slots  map[string]string `json:"slots"`
+}
+
+func ReadBootInfo(dirs StageDirs) BootInfo {
+	bs, _ := ReadBootState(filepath.Join(dirs.ESP, "boot-state"))
+	info := BootInfo{Target: bs.Target, Trial: bs.Trial, Slots: map[string]string{}}
+	if info.Target == "" {
+		info.Target = "active"
+	}
+	cand := markerVersion(filepath.Join(dirs.ESP, loaderCandidateFile))
+	for _, slot := range []string{"active", "next", "prev", "recovery"} {
+		p := filepath.Join(dirs.ESP, "kernelcache-"+slot+".efi")
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if slot == "next" && cand != 0 {
+			info.Slots[slot] = "loader " + strconv.Itoa(cand)
+			continue
+		}
+		v := KernelcacheVersion(p)
+		if v == "" {
+			v = "present"
+		}
+		info.Slots[slot] = v
+	}
+	return info
 }
