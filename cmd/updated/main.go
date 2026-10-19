@@ -53,17 +53,18 @@ const defaultWAL = "/boot/rootfs/deployment.json"
 // idle (no badge) | available (download badge) | downloading (progress bar) |
 // ready (green check, offer reboot) | error.
 type Status struct {
-	State          string `json:"state"`
-	Current        string `json:"current"`
-	Latest         string `json:"latest"`
-	ProductName    string `json:"product_name,omitempty"`
-	ProductVersion string `json:"product_version,omitempty"`
-	ProductBuild   string `json:"product_build,omitempty"`
-	ConsentToken   string `json:"consent_token,omitempty"`
-	Percent        int    `json:"percent"`
-	Error          string `json:"error,omitempty"`
-	manifestSHA256 string
-	retryable      bool
+	State           string `json:"state"`
+	Current         string `json:"current"`
+	Latest          string `json:"latest"`
+	ProductName     string `json:"product_name,omitempty"`
+	ProductVersion  string `json:"product_version,omitempty"`
+	ProductBuild    string `json:"product_build,omitempty"`
+	ConsentToken    string `json:"consent_token,omitempty"`
+	Percent         int    `json:"percent"`
+	Error           string `json:"error,omitempty"`
+	LoaderAvailable int    `json:"loader_available,omitempty"`
+	manifestSHA256  string
+	retryable       bool
 }
 
 type transientFeedError struct{ err error }
@@ -217,7 +218,8 @@ func check(feed, current, wal string) Status {
 	st := Status{
 		Current: current, Latest: m.Version, State: "idle",
 		ProductName: m.ProductName, ProductVersion: m.ProductVersion, ProductBuild: m.ProductBuild,
-		manifestSHA256: manifestSHA256,
+		manifestSHA256:  manifestSHA256,
+		LoaderAvailable: m.LoaderVersion,
 	}
 	if newer(m.Version, current) {
 		st.State = "available"
@@ -583,6 +585,7 @@ func newUpdateServer(c cfg) *http.Server {
 		w.WriteHeader(http.StatusConflict)
 		json.NewEncoder(w).Encode(clientStatus(statuses.get()))
 	})
+	registerLoaderHandlers(mux, c, &statuses)
 	mux.HandleFunc("/reboot", func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodPost) {
 			return
@@ -616,6 +619,7 @@ func startupCheck(c cfg, statuses *statusStore, retryDelay time.Duration) {
 		checked := pollOnce(c)
 		_, err := statuses.publishPoll(checked)
 		if err != nil || checked.State != "error" || !checked.retryable {
+			maybeAutoStageLoader(c, checked)
 			return
 		}
 		if attempt+1 < attempts {

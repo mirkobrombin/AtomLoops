@@ -97,12 +97,19 @@ func BootSuccess(walPath, healthDir string, store CounterStore, dirs StageDirs) 
 				_ = store.Advance(uint64(d.AntiRollback.CounterValue))
 			}
 		}
+		loaderMsg, loaderErr := HandleLoaderCandidate(dirs)
 		if err := writeDeploymentBootState(d, dirs); err != nil {
 			return "", fmt.Errorf("stable boot-state reconciliation failed: %w", err)
 		}
 		syscall.Sync()
 		CleanupNextSlots(dirs)
 		syscall.Sync()
+		if loaderErr != nil {
+			return "", loaderErr
+		}
+		if loaderMsg != "" {
+			return "stable: " + loaderMsg, nil
+		}
 		return "stable: no candidate in flight, nothing to confirm", nil
 	}
 	if err := RunHealthChecks(healthDir); err != nil {

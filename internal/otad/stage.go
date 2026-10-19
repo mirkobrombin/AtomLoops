@@ -55,68 +55,11 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	}
 	defer os.RemoveAll(work)
 
-	fetch := func(url, name string) ([]byte, error) {
-		p := filepath.Join(work, name)
-		if _, err := FetchTo(ctx, url, p); err != nil {
-			return nil, err
-		}
-		return os.ReadFile(p)
-	}
-
-	// 1. Manifest + its detached signature.
-	mData, err := fetch(manifestURL, "manifest.json")
+	vm, err := fetchVerifiedManifest(ctx, work, manifestURL, revocationURL, rootPub, expectedManifestSHA256)
 	if err != nil {
 		return "", err
 	}
-	mSig, err := fetch(manifestURL+".sig", "manifest.json.sig")
-	if err != nil {
-		return "", err
-	}
-
-	// 2. Signing cert (sibling of the manifest), verified against the ROOT key.
-	certURL := manifestURL[:strings.LastIndex(manifestURL, "/")+1] + "signing-cert.json"
-	certData, err := fetch(certURL, "signing-cert.json")
-	if err != nil {
-		return "", fmt.Errorf("stage: fetch signing cert: %w", err)
-	}
-	certSig, err := fetch(certURL+".sig", "signing-cert.json.sig")
-	if err != nil {
-		return "", err
-	}
-	signingPub, certVer, err := trust.VerifyCert(certData, certSig, rootPub, time.Now())
-	if err != nil {
-		return "", fmt.Errorf("stage: %w", err)
-	}
-
-	// 3. Revocation FIRST: refuse a revoked/too-old signing cert before trusting it.
-	if revocationURL != "" {
-		revData, err := fetch(revocationURL, "revocation.json")
-		if err != nil {
-			return "", fmt.Errorf("stage: fetch revocation: %w", err)
-		}
-		revSig, err := fetch(revocationURL+".sig", "revocation.json.sig")
-		if err != nil {
-			return "", err
-		}
-		if err := trust.CheckRevocation(revData, revSig, rootPub, certVer); err != nil {
-			return "", fmt.Errorf("stage: %w", err)
-		}
-	}
-
-	// 4. Manifest signature vs the (root-vouched) signing key.
-	if !trust.Verify(mData, mSig, signingPub) {
-		return "", fmt.Errorf("stage: manifest signature invalid -- refusing update")
-	}
-	if expectedManifestSHA256 != "" {
-		manifestSHA256 := fmt.Sprintf("%x", sha256.Sum256(mData))
-		if !strings.EqualFold(manifestSHA256, expectedManifestSHA256) {
-			return "", fmt.Errorf("stage: manifest changed since update check -- check again")
-		}
-	}
-	m, err := ParseManifest(mData)
-	if err != nil {
-		return "", err
-	}
+	m, mData, mSig, certData, certSig := vm.manifest, vm.data, vm.sig, vm.cert, vm.certSig
 
 	// Software anti-rollback (A4.2, level L1): refuse to stage a manifest whose
 	// version is a downgrade below the currently installed one. At the hardware
@@ -176,6 +119,7 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	if err := os.MkdirAll(dirs.ESP, 0o755); err != nil {
 		return "", err
 	}
+	cancelLoaderCandidate(dirs)
 	kPath := filepath.Join(dirs.ESP, "kernelcache-next.efi")
 	if _, err := FetchTo(ctx, m.KernelcacheURL, kPath); err != nil {
 		return "", err
@@ -344,4 +288,75 @@ func isDowngrade(newV, curV string) bool {
 		return false
 	}
 	return n < c
+}
+
+type verifiedManifest struct {
+	manifest                 Manifest
+	data, sig, cert, certSig []byte
+}
+
+func fetchVerifiedManifest(ctx context.Context, work, manifestURL, revocationURL string, rootPub []byte, expectedManifestSHA256 string) (*verifiedManifest, error) {
+	fetch := func(url, name string) ([]byte, error) {
+		p := filepath.Join(work, name)
+		if _, err := FetchTo(ctx, url, p); err != nil {
+			return nil, err
+		}
+		return os.ReadFile(p)
+	}
+
+	// 1. Manifest + its detached signature.
+	mData, err := fetch(manifestURL, "manifest.json")
+	if err != nil {
+		return nil, err
+	}
+	mSig, err := fetch(manifestURL+".sig", "manifest.json.sig")
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Signing cert (sibling of the manifest), verified against the ROOT key.
+	certURL := manifestURL[:strings.LastIndex(manifestURL, "/")+1] + "signing-cert.json"
+	certData, err := fetch(certURL, "signing-cert.json")
+	if err != nil {
+		return nil, fmt.Errorf("stage: fetch signing cert: %w", err)
+	}
+	certSig, err := fetch(certURL+".sig", "signing-cert.json.sig")
+	if err != nil {
+		return nil, err
+	}
+	signingPub, certVer, err := trust.VerifyCert(certData, certSig, rootPub, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("stage: %w", err)
+	}
+
+	// 3. Revocation FIRST: refuse a revoked/too-old signing cert before trusting it.
+	if revocationURL != "" {
+		revData, err := fetch(revocationURL, "revocation.json")
+		if err != nil {
+			return nil, fmt.Errorf("stage: fetch revocation: %w", err)
+		}
+		revSig, err := fetch(revocationURL+".sig", "revocation.json.sig")
+		if err != nil {
+			return nil, err
+		}
+		if err := trust.CheckRevocation(revData, revSig, rootPub, certVer); err != nil {
+			return nil, fmt.Errorf("stage: %w", err)
+		}
+	}
+
+	// 4. Manifest signature vs the (root-vouched) signing key.
+	if !trust.Verify(mData, mSig, signingPub) {
+		return nil, fmt.Errorf("stage: manifest signature invalid -- refusing update")
+	}
+	if expectedManifestSHA256 != "" {
+		manifestSHA256 := fmt.Sprintf("%x", sha256.Sum256(mData))
+		if !strings.EqualFold(manifestSHA256, expectedManifestSHA256) {
+			return nil, fmt.Errorf("stage: manifest changed since update check -- check again")
+		}
+	}
+	m, err := ParseManifest(mData)
+	if err != nil {
+		return nil, err
+	}
+	return &verifiedManifest{manifest: m, data: mData, sig: mSig, cert: certData, certSig: certSig}, nil
 }

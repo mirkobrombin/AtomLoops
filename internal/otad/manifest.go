@@ -56,6 +56,12 @@ type Manifest struct {
 	// never strands a GPU driver. Empty means no coupling (firmware-only or legacy).
 	KernelRelease string `json:"kernel_release,omitempty"`
 
+	LoaderVersion int    `json:"loader_version,omitempty"`
+	LoaderURL     string `json:"loader_url,omitempty"`
+	LoaderHash    string `json:"loader_hash,omitempty"`
+	LoaderSigURL  string `json:"loader_sig_url,omitempty"`
+	LoaderSigHash string `json:"loader_sig_hash,omitempty"`
+
 	// Firmware is an optional, independent OTA track: a signed firmware add-on
 	// image with its own version and anti-rollback floor, separate from rootfs
 	// and kernelcache so it can be updated on its own cadence. All fields absent

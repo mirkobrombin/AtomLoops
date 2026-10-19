@@ -13,6 +13,9 @@ comptime {
     if (@embedFile("root.pub").len < 32) @compileError("loader/src/root.pub must be a 32-byte raw Ed25519 public key");
 }
 
+const loader_version = "2";
+export const atom_loader_marker = "ATOM-LOADER-VERSION=" ++ loader_version ++ ";";
+
 fn puts(s: []const u8) void {
     const con_out = uefi.system_table.con_out orelse return;
     var buf: [256]u16 = undefined;
@@ -112,12 +115,38 @@ fn renderSurface(root: *File) void {
     }
 }
 
+fn chainedByLoader() bool {
+    const bs = uefi.system_table.boot_services orelse return false;
+    const li = (bs.handleProtocol(uefi.protocol.LoadedImage, uefi.handle) catch return false) orelse return false;
+    return li.device_handle == null;
+}
+
 fn openRoot() ?*File {
     const bs = uefi.system_table.boot_services orelse return null;
     const li = (bs.handleProtocol(uefi.protocol.LoadedImage, uefi.handle) catch return null) orelse return null;
-    const dev = li.device_handle orelse return null;
-    const sfs = (bs.handleProtocol(uefi.protocol.SimpleFileSystem, dev) catch return null) orelse return null;
-    return sfs.openVolume() catch return null;
+    if (li.device_handle) |dev| {
+        const sfs = (bs.handleProtocol(uefi.protocol.SimpleFileSystem, dev) catch return null) orelse return null;
+        return sfs.openVolume() catch return null;
+    }
+    const handles = (bs.locateHandleBuffer(.{ .by_protocol = &uefi.protocol.SimpleFileSystem.guid }) catch return null) orelse return null;
+    for (handles) |h| {
+        const sfs = (bs.handleProtocol(uefi.protocol.SimpleFileSystem, h) catch continue) orelse continue;
+        const vol = sfs.openVolume() catch continue;
+        const probe = vol.open(std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\boot-state"), .read, .{}) catch {
+            _ = vol.close() catch {};
+            continue;
+        };
+        _ = probe.close() catch {};
+        return vol;
+    }
+    return null;
+}
+
+fn markCandidateRan(root: *File) void {
+    const f = root.open(std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\loader-ran"), .read_write_create, .{}) catch return;
+    defer _ = f.close() catch {};
+    _ = f.write("version=" ++ loader_version ++ "\n") catch {};
+    _ = f.flush() catch {};
 }
 
 fn readFile(root: *File, path: [*:0]const u16) ?[]u8 {
@@ -573,6 +602,12 @@ pub fn main() void {
         dbg("no signing cert, verifying against root key\r\n");
         break :blk root_pubkey;
     };
+
+    if (chainedByLoader()) {
+        markCandidateRan(root);
+        if (!chainloadCascade(root, .stable, vkey)) puts("boot HALTED (no valid slot)\r\n");
+        while (true) {}
+    }
 
     // Silent by default: a key held in a short (~2s) window opens the
     // chooser, drawn centered on the black surface. No key -> the surface flows
