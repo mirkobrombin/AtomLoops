@@ -46,3 +46,20 @@ func LoadDeployment(walPath string) (*Deployment, error) {
 func NewDeployment(deviceID, rootfsVersion string) *Deployment {
 	return deployment.New(deviceID, rootfsVersion)
 }
+
+// RepairLoader verifies a signed boot loader against the ESP signing cert
+// chained to rootPub and installs it as the boot loader, keeping the previous
+// one beside it.
+func RepairLoader(dirs StageDirs, image, sig, rootPub []byte) (string, error) {
+	return otad.RepairLoader(dirs, image, sig, rootPub)
+}
+
+// LoaderVersionOf reads the version marker embedded in a loader image.
+func LoaderVersionOf(image []byte) int {
+	return otad.LoaderVersionOf(image)
+}
+
+// InstalledLoaderVersion reports the version of the loader on the ESP.
+func InstalledLoaderVersion(dirs StageDirs) int {
+	return otad.InstalledLoaderVersion(dirs)
+}
