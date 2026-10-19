@@ -80,8 +80,11 @@ func SystemOps() Ops {
 		Partitions: Partitions,
 		MountData: func(dev, dir string) bool {
 			os.MkdirAll(dir, 0755)
-			for _, fs := range []string{"ext4", "f2fs"} {
-				if syscall.Mount(dev, dir, fs, syscall.MS_RDONLY, "") == nil {
+			if syscall.Mount(dev, dir, "ext4", syscall.MS_RDONLY, "") == nil {
+				return true
+			}
+			for _, flags := range []uintptr{0, syscall.MS_RDONLY} {
+				if syscall.Mount(dev, dir, "f2fs", flags, "") == nil {
 					return true
 				}
 			}
