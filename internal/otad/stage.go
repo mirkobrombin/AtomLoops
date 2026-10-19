@@ -123,6 +123,9 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	// levels (L4/L5) the monotonic counter enforces this at boot; here we refuse
 	// to even stage a downgrade, so a rolled-back signing key cannot push an old,
 	// vulnerable image.
+	if _, err := promoteRunningCandidate(walPath, dirs); err != nil {
+		return "", fmt.Errorf("stage: promote the running candidate: %w", err)
+	}
 	cur, err := deployment.Load(walPath)
 	if err != nil {
 		return "", err

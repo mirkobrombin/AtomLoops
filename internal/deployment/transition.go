@@ -97,6 +97,12 @@ func (d *Deployment) RecordGoodBoot(identityConfirmed bool) (promoted bool) {
 	return false
 }
 
+func (d *Deployment) PromoteRunning() {
+	if d.HasPending() {
+		d.promote()
+	}
+}
+
 func (d *Deployment) promote() {
 	d.RootFS.LastKnownGood = d.RootFS.Current
 	d.RootFS.LastKnownGoodAt = timestamp()
