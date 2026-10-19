@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -32,6 +33,46 @@ func TestFetchToHappyPath(t *testing.T) {
 	// No leftover temp file.
 	if _, err := os.Stat(dest + ".tmp"); !os.IsNotExist(err) {
 		t.Errorf("temp file left behind")
+	}
+}
+
+func TestFetchToFollowsRedirects(t *testing.T) {
+	body := []byte("release asset")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/asset", func(w http.ResponseWriter, r *http.Request) { w.Write(body) })
+	mux.HandleFunc("/hop", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/asset", http.StatusTemporaryRedirect)
+	})
+	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/hop", http.StatusFound) })
+	mux.HandleFunc("/loop", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/loop", http.StatusFound) })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "asset")
+	if _, err := FetchTo(context.Background(), srv.URL+"/start", dest); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(dest); string(got) != string(body) {
+		t.Fatalf("fetched %q, want %q", got, body)
+	}
+	if _, err := FetchTo(context.Background(), srv.URL+"/loop", filepath.Join(t.TempDir(), "loop")); err == nil {
+		t.Fatal("a redirect loop was followed forever")
+	}
+}
+
+func TestFetchToRefusesHTTPSDowngrade(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("x")) }))
+	defer plain.Close()
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL, http.StatusFound)
+	}))
+	defer secure.Close()
+	old := http.DefaultTransport
+	http.DefaultTransport = secure.Client().Transport
+	defer func() { http.DefaultTransport = old }()
+	_, err := FetchTo(context.Background(), secure.URL, filepath.Join(t.TempDir(), "x"))
+	if err == nil || !strings.Contains(err.Error(), "refusing redirect") {
+		t.Fatalf("https redirect to http: %v", err)
 	}
 }
 

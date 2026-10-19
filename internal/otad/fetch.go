@@ -58,13 +58,9 @@ func (p *progressReader) Read(b []byte) (int, error) {
 // FetchTo downloads url to dest atomically (temp + fsync + rename), retrying
 // transient transport failures. Returns the number of bytes written.
 func FetchTo(ctx context.Context, url, dest string) (int64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := get(ctx, url)
 	if err != nil {
 		return 0, err
-	}
-	resp, err := fetchClient().Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("fetch %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -99,6 +95,39 @@ func FetchTo(ctx context.Context, url, dest string) (int64, error) {
 		return 0, err
 	}
 	return n, nil
+}
+
+const maxRedirects = 5
+
+func get(ctx context.Context, rawURL string) (*http.Response, error) {
+	for hop := 0; ; hop++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := fetchClient().Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("fetch %s: %w", rawURL, err)
+		}
+		switch resp.StatusCode {
+		case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+			http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		default:
+			return resp, nil
+		}
+		loc, err := resp.Location()
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("fetch %s: redirect without a location", rawURL)
+		}
+		if hop >= maxRedirects {
+			return nil, fmt.Errorf("fetch %s: too many redirects", rawURL)
+		}
+		if req.URL.Scheme == "https" && loc.Scheme != "https" {
+			return nil, fmt.Errorf("fetch %s: refusing redirect to %s", rawURL, loc.Scheme)
+		}
+		rawURL = loc.String()
+	}
 }
 
 // VerifyManifestSig verifies a detached Ed25519 signature (sig) over data against
