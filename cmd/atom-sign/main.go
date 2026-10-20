@@ -188,6 +188,11 @@ func run(args []string) int {
 		loaderURL := fs.String("loader-url", "", "URL the device will fetch the boot loader from")
 		loaderSig := fs.String("loader-sig", "", "boot loader signature file")
 		loaderSigURL := fs.String("loader-sig-url", "", "URL the device will fetch the boot loader signature from")
+		recovery := fs.String("recovery", "", "optional signed recovery image")
+		recoveryURL := fs.String("recovery-url", "", "URL the device will fetch the recovery image from")
+		recoverySig := fs.String("recovery-sig", "", "recovery image signature file")
+		recoverySigURL := fs.String("recovery-sig-url", "", "URL the device will fetch the recovery signature from")
+		recoveryVersion := fs.Int("recovery-version", 0, "recovery image version")
 		var bundles bundleList
 		fs.Var(&bundles, "bundle", "repeatable multi-bundle spec (name=..,img=..,url=..,verity=..,hashtree=..,hashtree-url=..,version=..); supersedes --firmware")
 		if err := fs.Parse(rest); err != nil {
@@ -232,6 +237,9 @@ func run(args []string) int {
 			KernelcacheSigFile: *kcSig, KernelcacheSigURL: *kcSigURL,
 			LoaderFile: *loader, LoaderURL: *loaderURL,
 			LoaderSigFile: *loaderSig, LoaderSigURL: *loaderSigURL,
+			RecoveryVersion: *recoveryVersion,
+			RecoveryFile:    *recovery, RecoveryURL: *recoveryURL,
+			RecoverySigFile: *recoverySig, RecoverySigURL: *recoverySigURL,
 		}, fwSpec...)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "atom-sign:", err)

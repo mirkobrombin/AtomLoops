@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,6 +52,26 @@ func stageLoader(c cfg, retry bool) (string, error) {
 	defer cancel()
 	return otad.StageLoader(ctx, c.wal, strings.TrimRight(c.feed, "/")+"/manifest.json", "", rootPub,
 		otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir}, retry)
+}
+
+func maybeStageRecovery(c cfg, checked Status) {
+	if checked.State != "idle" {
+		return
+	}
+	lock, err := acquireStageLock(c.stageLock)
+	if err != nil {
+		return
+	}
+	defer releaseStageLock(lock)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	msg, err := otad.StageRecovery(ctx, c.wal, strings.TrimRight(c.feed, "/")+"/manifest.json", "", rootPub,
+		otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir})
+	if err != nil {
+		log.Printf("updated: %v", err)
+	} else if msg != "" {
+		log.Printf("updated: %s", msg)
+	}
 }
 
 func maybeAutoStageLoader(c cfg, checked Status) {

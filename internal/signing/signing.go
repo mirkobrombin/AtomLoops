@@ -137,6 +137,10 @@ type ReleaseSpec struct {
 
 	LoaderFile, LoaderURL       string
 	LoaderSigFile, LoaderSigURL string
+
+	RecoveryVersion                 int
+	RecoveryFile, RecoveryURL       string
+	RecoverySigFile, RecoverySigURL string
 }
 
 func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, error) {
@@ -203,6 +207,21 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 		}
 		m.LoaderVersion, m.LoaderURL, m.LoaderHash = v, r.LoaderURL, lh
 		m.LoaderSigURL, m.LoaderSigHash = r.LoaderSigURL, lsh
+	}
+	if r.RecoveryFile != "" {
+		if r.RecoveryURL == "" || r.RecoverySigFile == "" || r.RecoverySigURL == "" || r.RecoveryVersion < 1 {
+			return "", fmt.Errorf("manifest: recovery image needs its version, URL, signature and signature URL")
+		}
+		rch, err := hashFile(r.RecoveryFile)
+		if err != nil {
+			return "", fmt.Errorf("hash recovery image: %w", err)
+		}
+		rcsh, err := hashFile(r.RecoverySigFile)
+		if err != nil {
+			return "", fmt.Errorf("hash recovery signature: %w", err)
+		}
+		m.RecoveryVersion, m.RecoveryURL, m.RecoveryHash = r.RecoveryVersion, r.RecoveryURL, rch
+		m.RecoverySigURL, m.RecoverySigHash = r.RecoverySigURL, rcsh
 	}
 	// A single unnamed bundle uses the legacy single-firmware fields (back-compat);
 	// any named or multiple bundles use the firmware_bundles array.

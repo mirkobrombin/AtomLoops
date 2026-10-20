@@ -11,6 +11,7 @@ package otad
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,6 +99,11 @@ func BootSuccess(walPath, healthDir string, store CounterStore, dirs StageDirs) 
 			}
 		}
 		loaderMsg, loaderErr := HandleLoaderCandidate(dirs)
+		if msg, err := RepairRecoverySlot(dirs); err != nil {
+			log.Printf("atomd: %v", err)
+		} else if msg != "" {
+			log.Printf("atomd: %s", msg)
+		}
 		if err := writeDeploymentBootState(d, dirs); err != nil {
 			return "", fmt.Errorf("stable boot-state reconciliation failed: %w", err)
 		}

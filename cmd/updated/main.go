@@ -620,6 +620,7 @@ func startupCheck(c cfg, statuses *statusStore, retryDelay time.Duration) {
 		_, err := statuses.publishPoll(checked)
 		if err != nil || checked.State != "error" || !checked.retryable {
 			maybeAutoStageLoader(c, checked)
+			maybeStageRecovery(c, checked)
 			return
 		}
 		if attempt+1 < attempts {

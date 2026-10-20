@@ -74,3 +74,28 @@ func runLoader(args []string) int {
 	fmt.Fprintf(os.Stderr, "atomd loader: unknown subcommand %q\n", sub)
 	return 2
 }
+
+func runRecovery(args []string) int {
+	if len(args) == 0 || args[0] != "update" {
+		fmt.Fprintln(os.Stderr, "usage: atomd recovery update --manifest URL [flags]")
+		return 2
+	}
+	fs := flag.NewFlagSet("recovery update", flag.ContinueOnError)
+	espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP atom dir")
+	wal := fs.String("wal", defaultWAL, "path to deployment.json")
+	pubkeyPath := fs.String("pubkey", defaultRootPub, "root public key file (32 raw bytes)")
+	manifest := fs.String("manifest", "", "signed manifest URL")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if *manifest == "" {
+		fmt.Fprintln(os.Stderr, "atomd recovery update: --manifest URL required")
+		return 2
+	}
+	pub, err := os.ReadFile(*pubkeyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "atomd recovery update: read pubkey: %v\n", err)
+		return 1
+	}
+	return report(otad.StageRecovery(context.Background(), *wal, *manifest, "", pub, otad.StageDirs{ESP: *espDir}))
+}

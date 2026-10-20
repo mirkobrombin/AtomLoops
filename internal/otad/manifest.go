@@ -62,6 +62,12 @@ type Manifest struct {
 	LoaderSigURL  string `json:"loader_sig_url,omitempty"`
 	LoaderSigHash string `json:"loader_sig_hash,omitempty"`
 
+	RecoveryVersion int    `json:"recovery_version,omitempty"`
+	RecoveryURL     string `json:"recovery_url,omitempty"`
+	RecoveryHash    string `json:"recovery_hash,omitempty"`
+	RecoverySigURL  string `json:"recovery_sig_url,omitempty"`
+	RecoverySigHash string `json:"recovery_sig_hash,omitempty"`
+
 	// Firmware is an optional, independent OTA track: a signed firmware add-on
 	// image with its own version and anti-rollback floor, separate from rootfs
 	// and kernelcache so it can be updated on its own cadence. All fields absent

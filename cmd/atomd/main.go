@@ -205,6 +205,8 @@ func run(args []string) int {
 			return 0
 		}
 		return report(otad.BootSuccess(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir}))
+	case "recovery":
+		return runRecovery(rest)
 	case "loader":
 		return runLoader(rest)
 	case "status":
