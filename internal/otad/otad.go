@@ -383,6 +383,18 @@ func Status(walPath string) (string, error) {
 	return b.String(), nil
 }
 
+func pendingUpdateError(d *deployment.Deployment, what string) error {
+	bi := bootedIdentity()
+	if bi.VerityHash != "" && bi.VerityHash == d.RootFS.PendingHash {
+		threshold := d.Kernelcache.StableThreshold
+		if threshold <= 0 {
+			threshold = 3
+		}
+		return fmt.Errorf("%s: the system update is being confirmed (%d of %d good starts), restart to finish it first", what, d.Kernelcache.StableBoots, threshold)
+	}
+	return fmt.Errorf("%s: a system update is waiting for a reboot, finish it first", what)
+}
+
 func sameRelease(a, b string) bool {
 	return strings.TrimPrefix(a, "v") == strings.TrimPrefix(b, "v")
 }

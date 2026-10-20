@@ -87,7 +87,7 @@ func StageRecovery(ctx context.Context, walPath, manifestURL, revocationURL stri
 		return "", err
 	}
 	if d.HasPending() {
-		return "", errors.New("recovery: a system update is waiting for a reboot, finish it first")
+		return "", pendingUpdateError(d, "recovery")
 	}
 	if _, err := RepairRecoverySlot(dirs); err != nil {
 		return "", err

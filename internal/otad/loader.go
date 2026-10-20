@@ -118,7 +118,7 @@ func StageLoader(ctx context.Context, walPath, manifestURL, revocationURL string
 		return "", err
 	}
 	if d.HasPending() {
-		return "", errors.New("loader: a system update is waiting for a reboot, finish it first")
+		return "", pendingUpdateError(d, "loader")
 	}
 	work, err := os.MkdirTemp("", "atomd-loader-*")
 	if err != nil {
