@@ -715,3 +715,38 @@ func TestInstalledVersionCountsStagedCandidate(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoryRecordsEachRunningVersionOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lib", "history.json")
+	now := time.Unix(1790000000, 0)
+	for _, v := range []struct{ version, build string }{{"v224", "26A055"}, {"v224", "26A055"}, {"v225", "26A056"}} {
+		if err := recordRunning(path, v.version, v.build, now); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Hour)
+	}
+	got := readHistory(path)
+	if len(got) != 2 || got[0].Version != "v224" || got[1].Version != "v225" || got[1].Build != "26A056" || !got[1].Success {
+		t.Fatalf("history = %+v", got)
+	}
+	if got[1].Time != 1790007200 {
+		t.Fatalf("time = %d", got[1].Time)
+	}
+}
+
+func TestHistoryEndpointServesEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	if err := recordRunning(path, "v225", "26A056", time.Unix(1790000000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	registerHistoryHandler(mux, cfg{history: path})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/history", nil))
+	var body struct {
+		Entries []historyEntry `json:"entries"`
+	}
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &body) != nil || len(body.Entries) != 1 || body.Entries[0].Version != "v225" {
+		t.Fatalf("code %d body %s", rec.Code, rec.Body.String())
+	}
+}

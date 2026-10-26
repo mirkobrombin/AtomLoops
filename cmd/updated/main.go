@@ -134,8 +134,9 @@ func main() {
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
 		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
 		stageLock := fs.String("stage-lock", "/run/updated-stage.lock", "cross-process update staging lock")
+		history := fs.String("history", defaultHistory, "installed version history")
 		fs.Parse(os.Args[2:])
-		c := cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock}
+		c := cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock, history: *history}
 		if err := serve(c); err != nil {
 			fmt.Fprintf(os.Stderr, "updated: serve: %v\n", err)
 			os.Exit(1)
@@ -287,6 +288,7 @@ type cfg struct {
 	wal, rootfsDir, espDir     string
 	firmwareDir                string
 	stageLock                  string
+	history                    string
 }
 
 // pollOnce checks the feed without downloading or staging artifacts.
@@ -586,6 +588,7 @@ func newUpdateServer(c cfg) *http.Server {
 		json.NewEncoder(w).Encode(clientStatus(statuses.get()))
 	})
 	registerLoaderHandlers(mux, c, &statuses)
+	registerHistoryHandler(mux, c)
 	mux.HandleFunc("/reboot", func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodPost) {
 			return
@@ -636,6 +639,9 @@ func serve(c cfg) error {
 		return fmt.Errorf("listen %s: %w", c.sock, err)
 	}
 	defer ln.Close()
+	if err := recordRunning(c.history, runningVersion(c.wal), osRelease("/etc/os-release", "BUILD_ID"), time.Now()); err != nil {
+		fmt.Fprintf(os.Stderr, "updated: history %s: %v\n", c.history, err)
+	}
 	fmt.Fprintf(os.Stderr, "updated: serving %s (feed %s)\n", c.sock, c.feed)
 	return newUpdateServer(c).Serve(ln)
 }
