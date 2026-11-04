@@ -750,3 +750,22 @@ func TestHistoryEndpointServesEntries(t *testing.T) {
 		t.Fatalf("code %d body %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestPublishPollReplacesReadyWithNewerRelease(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "status.json")
+	if err := writeState(statePath, Status{State: "ready", Current: "v1", Latest: "v2"}); err != nil {
+		t.Fatal(err)
+	}
+	store := statusStore{statePath: statePath}
+	got, err := store.publishPoll(Status{State: "idle", Current: "v2", Latest: "v2"})
+	if err != nil || got.State != "ready" || got.Latest != "v2" {
+		t.Fatalf("idle poll over ready = %+v, %v; want the ready v2", got, err)
+	}
+	got, err = store.publishPoll(Status{State: "available", Current: "v2", Latest: "v3"})
+	if err != nil || got.State != "available" || got.Latest != "v3" {
+		t.Fatalf("newer poll over ready = %+v, %v; want available v3", got, err)
+	}
+	if stored, ok := readState(statePath); !ok || stored.State != "available" {
+		t.Fatalf("stored state = %+v, want available", stored)
+	}
+}

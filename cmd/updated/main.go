@@ -467,7 +467,7 @@ func (s *statusStore) publishPoll(status Status) (Status, error) {
 	if s.live.State == "downloading" {
 		return s.live, nil
 	}
-	if current, ok := readState(s.statePath); ok && current.State == "ready" {
+	if current, ok := readState(s.statePath); ok && current.State == "ready" && !(status.State == "available" && newer(status.Latest, current.Latest)) {
 		return current, nil
 	}
 	return status, writeState(s.statePath, status)
