@@ -21,6 +21,7 @@ import (
 	"github.com/mirkobrombin/atomloops/internal/audit"
 	"github.com/mirkobrombin/atomloops/internal/otad"
 	"github.com/mirkobrombin/atomloops/internal/recovery"
+	"github.com/mirkobrombin/atomloops/internal/sealedlog"
 	"github.com/mirkobrombin/go-foundation/pkg/scheduler"
 )
 
@@ -50,9 +51,11 @@ func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manife
 
 	if msg, err := otad.BootSuccess(wal, healthDir, store, dirs); err != nil {
 		fmt.Fprintln(os.Stderr, "atomd: boot-success:", err)
+		_ = sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompAtomd, Code: sealedlog.CodeFail})
 	} else {
 		fmt.Println(msg)
 		audit.Append(auditPath, "boot-success", msg, time.Now)
+		_ = sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompAtomd, Code: sealedlog.OtaHealthy})
 	}
 
 	sched := scheduler.New(scheduler.WithLogger(func(m string) { fmt.Println("atomd:", m) }))
@@ -70,6 +73,7 @@ func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manife
 				if err == nil {
 					fmt.Println("atomd:", msg)
 					audit.Append(auditPath, "stage", msg, time.Now)
+					_ = sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompAtomd, Code: sealedlog.OtaStaged})
 				}
 				return err
 			},
@@ -204,7 +208,13 @@ func run(args []string) int {
 			fmt.Printf("atomd: live/uninstalled system (no %s), boot-success is a no-op\n", *installed)
 			return 0
 		}
-		return report(otad.BootSuccess(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir}))
+		msg, err := otad.BootSuccess(*wal, *hd, pickCounter(*counter, *counterRead, *counterAdvance), otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir})
+		code := sealedlog.OtaHealthy
+		if err != nil {
+			code = sealedlog.CodeFail
+		}
+		_ = sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompAtomd, Code: code})
+		return report(msg, err)
 	case "recovery":
 		return runRecovery(rest)
 	case "loader":

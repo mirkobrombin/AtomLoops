@@ -34,6 +34,7 @@ import (
 	_ "embed"
 
 	"github.com/mirkobrombin/atomloops/internal/otad"
+	"github.com/mirkobrombin/atomloops/internal/sealedlog"
 	"github.com/mirkobrombin/atomloops/internal/trust"
 )
 
@@ -378,8 +379,14 @@ func stage(c cfg, expectedManifestSHA256 string, onProgress otad.ProgressFunc) (
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	ctx = otad.WithProgress(ctx, onProgress)
-	return otad.StageExpectedManifest(ctx, c.wal, strings.TrimRight(c.feed, "/")+"/manifest.json", "", rootPub,
+	msg, err := otad.StageExpectedManifest(ctx, c.wal, strings.TrimRight(c.feed, "/")+"/manifest.json", "", rootPub,
 		otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir, Firmware: c.firmwareDir}, expectedManifestSHA256)
+	if err != nil {
+		_ = sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompUpdated, Code: sealedlog.OtaDownloadFail})
+	} else {
+		_ = sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompUpdated, Code: sealedlog.OtaStaged})
+	}
+	return msg, err
 }
 
 type statusStore struct {
@@ -482,6 +489,7 @@ func claimReboot(c cfg, statuses *statusStore) (*os.File, error) {
 		releaseStageLock(lock)
 		return nil, errNoStagedUpdate
 	}
+	_ = sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompUpdated, Code: sealedlog.OtaReboot})
 	return lock, nil
 }
 

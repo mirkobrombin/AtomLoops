@@ -4,6 +4,7 @@ const std = @import("std");
 const uefi = std.os.uefi;
 const File = uefi.protocol.File;
 const cc = uefi.cc;
+const slog = @import("sealedlog.zig");
 
 // Root public key, embedded from src/root.pub (32 raw bytes), same key the daemon
 // uses. The committed file is a dev placeholder; the deployment build injects its
@@ -13,7 +14,7 @@ comptime {
     if (@embedFile("root.pub").len < 32) @compileError("loader/src/root.pub must be a 32-byte raw Ed25519 public key");
 }
 
-const loader_version = "2";
+const loader_version = "3";
 export const atom_loader_marker = "ATOM-LOADER-VERSION=" ++ loader_version ++ ";";
 
 fn puts(s: []const u8) void {
@@ -396,6 +397,15 @@ const ATOM_NV_ANTIROLLBACK: u32 = 0x0150A701;
 // TPM is present or the NV index is absent -- the caller then cannot enforce and boots
 // (L1: the software stage-side anti-rollback is the floor there).
 fn nvFloor() ?u64 {
+    return nvRead(ATOM_NV_ANTIROLLBACK);
+}
+
+// The TPM NV counter the running system advances once per boot for the
+// sealed log; the loader only reads it, to stamp its block.
+const ATOM_NV_SEALEDLOG: u32 = 0x0150A702;
+
+// nvRead reads an 8-byte NV counter that authorizes its own read.
+fn nvRead(index: u32) ?u64 {
     const bs = uefi.system_table.boot_services orelse return null;
     const tcg2 = (bs.locateProtocol(Tcg2, null) catch return null) orelse return null;
     const submit: *const fn (*const Tcg2, u32, [*]const u8, u32, [*]u8) callconv(cc) uefi.Status =
@@ -419,8 +429,8 @@ fn nvFloor() ?u64 {
     const size_at = n;
     w32(&cmd, &n, 0); // commandSize (patched below)
     w32(&cmd, &n, 0x0000014E); // TPM_CC_NV_Read
-    w32(&cmd, &n, ATOM_NV_ANTIROLLBACK); // authHandle (the NV index authorizes its own read)
-    w32(&cmd, &n, ATOM_NV_ANTIROLLBACK); // nvIndex
+    w32(&cmd, &n, index); // authHandle (the NV index authorizes its own read)
+    w32(&cmd, &n, index); // nvIndex
     const auth_at = n;
     w32(&cmd, &n, 0); // authorizationSize (patched)
     const auth_start = n;
@@ -447,12 +457,23 @@ fn nvFloor() ?u64 {
     return v;
 }
 
+fn slotIndex(slot: []const u8) u64 {
+    if (std.mem.eql(u8, slot, "kernelcache-next.efi")) return 0;
+    if (std.mem.eql(u8, slot, "kernelcache-active.efi")) return 1;
+    if (std.mem.eql(u8, slot, "kernelcache-prev.efi")) return 2;
+    if (std.mem.eql(u8, slot, "kernelcache-recovery.efi")) return 3;
+    return 9;
+}
+
 // chainloadSlot reads \EFI\atom\<slot>, verifies its detached .sig against the root
 // key, and only then hands control to it (framebuffer preserved).
 fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
     const bs = uefi.system_table.boot_services orelse return false;
     var pbuf: [96]u16 = undefined;
+    const idx = slotIndex(slot);
+    slog.record(slog.ev_slot_chosen, &.{idx});
     const img = readFile(root, atomPath(&pbuf, slot, "")) orelse {
+        slog.record(slog.ev_slot_missing, &.{ idx, 0 });
         puts("slot image missing\r\n");
         return false;
     };
@@ -460,12 +481,14 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
 
     var sbuf: [96]u16 = undefined;
     const sig = readFile(root, atomPath(&sbuf, slot, ".sig")) orelse {
+        slog.record(slog.ev_slot_missing, &.{ idx, 1 });
         puts("slot signature missing -- refusing\r\n");
         return false;
     };
     defer uefi.pool_allocator.free(sig);
 
     if (!verifyEd25519(img, sig, key)) {
+        slog.record(slog.ev_signature_bad, &.{idx});
         puts("signature INVALID -- refusing to chain\r\n");
         return false;
     }
@@ -476,15 +499,26 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
     if (readEmbeddedVersion(img)) |ver| {
         if (nvFloor()) |floor| {
             if (ver < floor) {
+                slog.record(slog.ev_rollback_refused, &.{ idx, ver, floor });
                 puts("anti-rollback: slot version below the floor -- refusing\r\n");
                 return false;
             }
             dbg("anti-rollback: slot at or above floor\r\n");
         }
     }
-    const handle = bs.loadImage(false, uefi.handle, .{ .buffer = img }) catch return false;
-    if (measureIntoPcr(img)) dbg("TPM: measured into PCR 8\r\n") else dbg("TPM: absent, Level 1\r\n");
-    _ = bs.startImage(handle) catch return false;
+    const handle = bs.loadImage(false, uefi.handle, .{ .buffer = img }) catch {
+        slog.record(slog.ev_chainload_fail, &.{ idx, 0 });
+        return false;
+    };
+    const measured = measureIntoPcr(img);
+    if (measured) dbg("TPM: measured into PCR 8\r\n") else dbg("TPM: absent, Level 1\r\n");
+    slog.record(slog.ev_measured, &.{@intFromBool(measured)});
+    slog.record(slog.ev_chainload, &.{idx});
+    slog.commit();
+    _ = bs.startImage(handle) catch {
+        slog.record(slog.ev_chainload_fail, &.{ idx, 1 });
+        return false;
+    };
     return true;
 }
 
@@ -595,6 +629,7 @@ pub fn main() void {
         while (true) {}
     };
     renderSurface(root);
+    if (slog.open(root, nvRead(ATOM_NV_SEALEDLOG) orelse 0)) dbg("sealed log: ring found\r\n") else dbg("sealed log: no ring\r\n");
 
     // Resolve the verification key: the root-verified signing key from the ESP
     // cert (A4.1), or the root key directly during transition (no cert yet).
@@ -605,7 +640,8 @@ pub fn main() void {
 
     if (chainedByLoader()) {
         markCandidateRan(root);
-        if (!chainloadCascade(root, .stable, vkey)) puts("boot HALTED (no valid slot)\r\n");
+        slog.record(slog.ev_boot_start, &.{ 2, 4, 0 });
+        if (!chainloadCascade(root, .stable, vkey)) halted();
         while (true) {}
     }
 
@@ -615,15 +651,18 @@ pub fn main() void {
     if (pollKey(2000)) {
         centerCursor();
         const chosen = runChooser();
+        slog.record(slog.ev_boot_start, &.{ 2, 3, 0 });
+        slog.record(slog.ev_chooser, &.{slotIndex(chosen)});
         // A manually-picked slot may not exist (e.g. 'prev' on a single-slot fresh
         // install): don't HALT on it -- fall back to the always-present active slot
         // so a stray keypress at the boot window can never strand the machine.
         if (!chainloadSlot(root, chosen, vkey)) {
             if (!std.mem.eql(u8, chosen, "kernelcache-active.efi")) {
                 puts("picked slot unavailable, falling back to active\r\n");
+                slog.record(slog.ev_fallback, &.{1});
                 _ = chainloadSlot(root, "kernelcache-active.efi", vkey);
             }
-            puts("boot HALTED\r\n");
+            halted();
         }
         while (true) {}
     }
@@ -632,6 +671,8 @@ pub fn main() void {
     // trial budget). A pending candidate with attempts left boots -next after we
     // decrement and persist; a spent budget falls back to -active.
     var cascade: BootCascade = .stable;
+    var attempts_left: u64 = 0;
+    var spent = false;
     // The owner-armed bootloader-unlock consent lives beside boot-state on the ESP.
     // When armed, the wipe+unlock must run in the controlled recovery environment,
     // so an armed flag routes to the recovery slot just like an explicit request.
@@ -649,6 +690,9 @@ pub fn main() void {
         } else if (st.trial and st.target_next and st.attempts > 0) {
             writeBootState(root, true, true, st.attempts - 1);
             cascade = .trial;
+            attempts_left = @intCast(st.attempts - 1);
+        } else if (st.trial and st.target_next) {
+            spent = true;
         }
         uefi.pool_allocator.free(b);
     } else if (unlock_armed) {
@@ -658,6 +702,17 @@ pub fn main() void {
         puts("no boot-state, defaulting to active\r\n");
     }
 
-    if (!chainloadCascade(root, cascade, vkey)) puts("boot HALTED (no valid slot)\r\n");
+    if (unlock_armed) slog.record(slog.ev_unlock_armed, &.{});
+    slog.record(slog.ev_boot_start, &.{ 2, @intFromEnum(cascade), attempts_left });
+    if (cascade == .trial) slog.record(slog.ev_trial, &.{attempts_left});
+    if (spent) slog.record(slog.ev_fallback, &.{2});
+    if (cascade == .recovery) slog.record(slog.ev_recovery, &.{@intFromBool(unlock_armed)});
+    if (!chainloadCascade(root, cascade, vkey)) halted();
     while (true) {}
+}
+
+fn halted() void {
+    slog.record(slog.ev_halted, &.{});
+    slog.commit();
+    puts("boot HALTED (no valid slot)\r\n");
 }
