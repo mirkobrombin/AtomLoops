@@ -1,6 +1,7 @@
 package boot
 
 import (
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -26,6 +27,7 @@ type Facts struct {
 	HashFiles  []string
 	HashMatch  bool
 	KernelLog  string
+	Disks      []DiskHealth
 }
 
 var ioError = regexp.MustCompile(`(?i)(I/O error, dev ([a-z0-9]+)|Buffer I/O error on dev(ice)? ([a-z0-9]+)|critical medium error, dev ([a-z0-9]+)|nvme ([a-z0-9]+): (I/O|controller is down|resetting controller))`)
@@ -66,6 +68,21 @@ func Diagnose(f Facts) Diagnosis {
 					Code:   "B02",
 					Phase:  "storage",
 					Cause:  "the disk holding the system reported read errors (" + e + ")",
+					Action: "back up what can still be read, check the disk health, then reinstall from recovery",
+				}
+			}
+		}
+	}
+	for _, h := range f.Disks {
+		if !h.Failing() {
+			continue
+		}
+		for _, c := range candidates {
+			if onController(c, h.Dev) {
+				return Diagnosis{
+					Code:   "B02",
+					Phase:  "storage",
+					Cause:  fmt.Sprintf("the disk holding the system reports a failure (%s critical warning 0x%02x, %d media errors)", h.Dev, h.CriticalWarning, h.MediaErrors),
 					Action: "back up what can still be read, check the disk health, then reinstall from recovery",
 				}
 			}
