@@ -35,11 +35,12 @@ const (
 	FamilyInit
 	FamilyOTA
 	FamilySession
+	FamilyBoot
 )
 
 var familyNames = map[string]Family{
 	"-": FamilyNone, "loader": FamilyLoader, "kernel": FamilyKernel,
-	"init": FamilyInit, "ota": FamilyOTA, "session": FamilySession,
+	"init": FamilyInit, "ota": FamilyOTA, "session": FamilySession, "boot": FamilyBoot,
 }
 
 type compInfo struct {
@@ -52,7 +53,7 @@ var components = map[Component]compInfo{
 	CompLoader:      {"loader", FamilyLoader, false},
 	CompKernelLinux: {"kernel-linux", FamilyKernel, false},
 	CompKernelEarly: {"kernel-early", FamilyKernel, false},
-	CompAtomInit:    {"atom-init", FamilyNone, false},
+	CompAtomInit:    {"atom-init", FamilyBoot, false},
 	CompAtomd:       {"atomd", FamilyOTA, false},
 	CompUpdated:     {"updated", FamilyOTA, false},
 	CompLogd:        {"sealedlogd", FamilyNone, false},
@@ -65,7 +66,7 @@ const DefaultDictionary = "/usr/share/sealedlog/components"
 //
 //	NUMBER NAME FAMILY [user]
 //
-// FAMILY is one of loader, kernel, init, ota, session or "-". A component
+// FAMILY is one of loader, kernel, init, ota, session, boot or "-". A component
 // marked user may be logged by desktop users. Lines starting with # are
 // skipped. The components of Atom Loops cannot be redefined.
 func LoadDictionary(b []byte) error {
@@ -200,6 +201,12 @@ const (
 )
 
 const (
+	BootDiagnosis Code = CodeLocal + iota
+	BootDataCheck
+	BootDataRepair
+)
+
+const (
 	SessionLogin Code = CodeLocal + iota
 	SessionLoginFail
 	SessionLogout
@@ -229,6 +236,7 @@ var familyCodeNames = map[Family][]string{
 	FamilyInit:    {"target", "unit-fail", "unit-restart", "shutdown"},
 	FamilyOTA:     otaNames,
 	FamilySession: sessionNames,
+	FamilyBoot:    {"diagnosis", "data-check", "data-repair"},
 }
 
 var kernelNames = []string{"stage", "root-mounted", "init-started", "init-exit", "panic", "oops", "watchdog",

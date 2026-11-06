@@ -67,3 +67,22 @@ func DeleteEFIVar(name string) error {
 	f.Close()
 	return os.Remove(p)
 }
+
+// WriteEFIVar replaces a non-volatile variable with data.
+func WriteEFIVar(name string, data []byte) error {
+	if err := DeleteEFIVar(name); err != nil {
+		return err
+	}
+	b := make([]byte, 4, 4+len(data))
+	b[0] = 0x07
+	b = append(b, data...)
+	f, err := os.OpenFile(efiPath(name), os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}

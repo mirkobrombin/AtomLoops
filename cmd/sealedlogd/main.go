@@ -288,7 +288,7 @@ func b2u(b bool) uint64 {
 // ingestFirmware seals what earlier stages left in EFI variables: the records
 // of a kernel that could not reach the ring.
 func ingestFirmware(c *sealedlog.Collector) {
-	for _, name := range []string{sealedlog.VarEarlyPrev, sealedlog.VarEarly} {
+	for _, name := range []string{sealedlog.VarEarlyPrev, sealedlog.VarInit, sealedlog.VarEarly} {
 		b, err := sealedlog.ReadEFIVar(name)
 		if err != nil {
 			continue

@@ -19,6 +19,10 @@ const (
 	// VarEarlyPrev is where a kernel moves VarEarly of an earlier boot that
 	// nobody collected before it starts its own.
 	VarEarlyPrev = "SintyLogPrev"
+	// VarInit is non-volatile and written by the initramfs, in the VarEarly
+	// format, with what it found and did before the root was mounted. It
+	// outlives a boot that ends in recovery.
+	VarInit = "SintyLogInit"
 )
 
 // LoaderBoot is what the loader told the running system through VarBoot.
