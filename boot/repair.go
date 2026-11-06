@@ -127,9 +127,14 @@ type Repair struct {
 // Runner runs a program and returns its combined output and exit status.
 type Runner func(name string, args ...string) (string, int)
 
-// RunCommand is the Runner that executes on the running system.
+// RunCommand is the Runner that executes on the running system. Its input
+// answers no to the question fsck.f2fs asks even with -y, whether to copy lost
+// files out of the partition; reading an empty input there aborts the repair
+// halfway.
 func RunCommand(name string, args ...string) (string, int) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	cmd := exec.Command(name, args...)
+	cmd.Stdin = strings.NewReader("n\n")
+	out, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
 	switch {
 	case err == nil:

@@ -112,3 +112,10 @@ func TestRepairReportKeepsBothEndsOfALongOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestRunCommandAnswersNoToTheLostFilesQuestion(t *testing.T) {
+	out, exit := RunCommand("sh", "-c", "read a && printf %s \"$a\"")
+	if exit != 0 || out != "n" {
+		t.Fatalf("got %q exit %d", out, exit)
+	}
+}
