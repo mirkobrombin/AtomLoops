@@ -247,6 +247,11 @@ func contains(list []string, v string) bool {
 	return false
 }
 
+// unmountableTries is how many times in a row the kernel may refuse the same
+// data partition before root selection stops waiting for media: the disk is
+// already there, and each refused F2FS mount can take seconds.
+const unmountableTries = 3
+
 // SelectRoot finds the root image whose dm-verity tree matches the signed
 // root hash. It retries while boot media come up. A locked device only ever
 // gets a verity mapping back; an unlocked one gets the raw image of the slot
@@ -256,6 +261,7 @@ func SelectRoot(cfg Config, m *Media, ops Ops) (*Root, error) {
 	if !ValidRootHash(cfg.RootHash) {
 		return nil, errors.New("no valid root hash on the kernel command line")
 	}
+	refused := 0
 	for i := 0; i < cfg.Attempts; i++ {
 		m.FindData(&cfg, ops)
 		m.FindISO(&cfg, ops)
@@ -269,6 +275,14 @@ func SelectRoot(cfg Config, m *Media, ops Ops) (*Root, error) {
 			root.Optical = m.ISOData != "" && root.Data == m.ISOData
 			root.FromSlot = contains(m.SlotDatas, root.Data)
 			return root, nil
+		}
+		if m.DataDev == "" && m.ISODev == "" && len(m.Unmountable) > 0 {
+			refused++
+			if refused == unmountableTries {
+				break
+			}
+		} else {
+			refused = 0
 		}
 		if i == 0 && m.DataDev == "" && m.ISODev == "" {
 			Logf("waiting for boot media")

@@ -384,6 +384,14 @@ func TestUnmountableDataIsNotAHashMismatch(t *testing.T) {
 	if len(unmountable.Partitions) != 1 || unmountable.Partitions[0] != (UnmountablePartition{Dev: "/dev/nvme0n1p2", FS: "f2fs"}) {
 		t.Errorf("partitions %v", unmountable.Partitions)
 	}
+	m = Media{}
+	f.sleeps = 0
+	if _, err = SelectRoot(Config{RootHash: goodHash}, &m, ops); !errors.As(err, &unmountable) {
+		t.Fatalf("got %v, want a data partition mount failure", err)
+	}
+	if f.sleeps != unmountableTries-1 {
+		t.Errorf("waited %d times for a disk the kernel keeps refusing", f.sleeps)
+	}
 	f = installed()
 	f.erofs["/sysdata/boot/rootfs/rootfs-active.erofs"] = true
 	ops = f.ops()
