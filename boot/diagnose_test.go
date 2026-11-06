@@ -24,6 +24,7 @@ func TestDiagnose(t *testing.T) {
 			KernelLog: "nvme nvme0: I/O 12 QID 3 timeout"}, "B02", false},
 		{"unmountable", Facts{Partitions: disk, Media: broken}, "B03", false},
 		{"no image", Facts{Partitions: disk, Media: held}, "B04", false},
+		{"slots deleted", Facts{Partitions: disk, Media: Media{Empty: []string{"/dev/nvme0n1p2"}}}, "B04", false},
 		{"no hash tree", Facts{Partitions: disk, Media: held, SlotFiles: slots}, "B05", false},
 		{"hash mismatch", Facts{Partitions: disk, Media: held, SlotFiles: slots, HashFiles: hashes}, "B06", true},
 		{"verification fails", Facts{Partitions: disk, Media: held, SlotFiles: slots, HashFiles: hashes, HashMatch: true}, "B07", true},

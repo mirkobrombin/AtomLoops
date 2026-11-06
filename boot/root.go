@@ -136,6 +136,8 @@ type Media struct {
 	// Unmountable lists partitions that carry a data filesystem the kernel
 	// refused to mount on the last scan.
 	Unmountable []UnmountablePartition
+	// Empty lists data partitions that mounted but hold no root slot.
+	Empty []string
 }
 
 // UnmountablePartition is a partition whose superblock names a data
@@ -152,7 +154,7 @@ func (m *Media) FindData(cfg *Config, ops Ops) {
 	if m.DataDev != "" {
 		return
 	}
-	m.Unmountable = nil
+	m.Unmountable, m.Empty = nil, nil
 	for _, p := range ops.Partitions() {
 		if strings.HasPrefix(filepath.Base(p.Dev), "sr") {
 			continue
@@ -168,6 +170,9 @@ func (m *Media) FindData(cfg *Config, ops Ops) {
 		}
 		slots := ops.Glob(cfg.DataMount + "/boot/rootfs/rootfs-*.erofs")
 		if len(slots) == 0 {
+			if ops.Exists(cfg.DataMount + "/boot/rootfs") {
+				m.Empty = append(m.Empty, p.Dev)
+			}
 			ops.Unmount(cfg.DataMount)
 			continue
 		}

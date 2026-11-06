@@ -402,3 +402,18 @@ func TestUnmountableDataIsNotAHashMismatch(t *testing.T) {
 		t.Error("a mounted data partition with no matching slot is a hash mismatch, not a mount failure")
 	}
 }
+
+func TestFindDataRemembersADataPartitionWithoutImages(t *testing.T) {
+	f := newFake()
+	f.parts = []Partition{{Dev: "/dev/nvme0n1p1"}, {Dev: "/dev/nvme0n1p2"}}
+	f.files["/dev/nvme0n1p2:data"] = true
+	f.files["/sysdata/boot/rootfs"] = true
+	var m Media
+	m.FindData(&Config{DataMount: "/sysdata"}, f.ops())
+	if m.DataDev != "" || len(m.Empty) != 1 || m.Empty[0] != "/dev/nvme0n1p2" {
+		t.Fatalf("media %+v", m)
+	}
+	if d := Diagnose(Facts{Partitions: f.parts, Media: m}); d.Code != "B04" {
+		t.Fatalf("diagnosis %+v", d)
+	}
+}

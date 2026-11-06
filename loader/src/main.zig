@@ -467,6 +467,25 @@ fn slotIndex(slot: []const u8) u64 {
 
 // chainloadSlot reads \EFI\atom\<slot>, verifies its detached .sig against the root
 // key, and only then hands control to it (framebuffer preserved).
+var fault: ?[]const u8 = null;
+
+fn failed(cause: []const u8) bool {
+    if (fault == null) fault = cause;
+    return false;
+}
+
+fn writeRecoveryReason(root: *File, cause: []const u8) void {
+    const path = std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\state\\recovery-reason");
+    if (root.open(path, .read_write, .{})) |old| {
+        _ = old.delete() catch {};
+    } else |_| {}
+    const f = root.open(path, .read_write_create, .{}) catch return;
+    defer _ = f.close() catch {};
+    var buf: [160]u8 = undefined;
+    const line = std.fmt.bufPrint(&buf, "loader: {s}\n", .{cause}) catch return;
+    _ = f.write(line) catch {};
+}
+
 fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
     const bs = uefi.system_table.boot_services orelse return false;
     var pbuf: [96]u16 = undefined;
@@ -475,7 +494,7 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
     const img = readFile(root, atomPath(&pbuf, slot, "")) orelse {
         slog.record(slog.ev_slot_missing, &.{ idx, 0 });
         puts("slot image missing\r\n");
-        return false;
+        return failed("the system kernel is missing");
     };
     defer uefi.pool_allocator.free(img);
 
@@ -483,14 +502,14 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
     const sig = readFile(root, atomPath(&sbuf, slot, ".sig")) orelse {
         slog.record(slog.ev_slot_missing, &.{ idx, 1 });
         puts("slot signature missing -- refusing\r\n");
-        return false;
+        return failed("the system kernel signature is missing");
     };
     defer uefi.pool_allocator.free(sig);
 
     if (!verifyEd25519(img, sig, key)) {
         slog.record(slog.ev_signature_bad, &.{idx});
         puts("signature INVALID -- refusing to chain\r\n");
-        return false;
+        return failed("the system kernel has an invalid signature");
     }
     dbg("signature OK\r\n");
     // Refuse a signed-but-OLDER slot when a hardware anti-rollback floor exists.
@@ -501,14 +520,14 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
             if (ver < floor) {
                 slog.record(slog.ev_rollback_refused, &.{ idx, ver, floor });
                 puts("anti-rollback: slot version below the floor -- refusing\r\n");
-                return false;
+                return failed("the system kernel is older than this device allows");
             }
             dbg("anti-rollback: slot at or above floor\r\n");
         }
     }
     const handle = bs.loadImage(false, uefi.handle, .{ .buffer = img }) catch {
         slog.record(slog.ev_chainload_fail, &.{ idx, 0 });
-        return false;
+        return failed("the system kernel could not be loaded");
     };
     const measured = measureIntoPcr(img);
     if (measured) dbg("TPM: measured into PCR 8\r\n") else dbg("TPM: absent, Level 1\r\n");
@@ -517,7 +536,7 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
     slog.commit();
     _ = bs.startImage(handle) catch {
         slog.record(slog.ev_chainload_fail, &.{ idx, 1 });
-        return false;
+        return failed("the system kernel could not be started");
     };
     return true;
 }
@@ -546,6 +565,9 @@ fn chainloadCascade(root: *File, cascade: BootCascade, key: [32]u8) bool {
         dbg("trying slot: ");
         dbg(slot);
         dbg("\r\n");
+        if (cascade != .recovery and slotIndex(slot) == 3) {
+            if (fault) |cause| writeRecoveryReason(root, cause);
+        }
         if (chainloadSlot(root, slot, key)) return true;
     }
     return false;

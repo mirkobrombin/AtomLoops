@@ -58,6 +58,7 @@ func Diagnose(f Facts) Diagnosis {
 	for _, u := range f.Media.Unmountable {
 		candidates = append(candidates, u.Dev)
 	}
+	candidates = append(candidates, f.Media.Empty...)
 	if data != "" {
 		candidates = append(candidates, data)
 	}
@@ -94,6 +95,14 @@ func Diagnose(f Facts) Diagnosis {
 			Phase:  "data-mount",
 			Cause:  "the data partition " + f.Media.Unmountable[0].Dev + " (" + f.Media.Unmountable[0].FS + ") cannot be mounted",
 			Action: "check and repair the data partition from recovery",
+		}
+	}
+	if data == "" && f.Media.ISODev == "" && len(f.Media.Empty) > 0 {
+		return Diagnosis{
+			Code:   "B04",
+			Phase:  "root-image",
+			Cause:  "the data partition " + f.Media.Empty[0] + " holds no system image",
+			Action: "reinstall from recovery",
 		}
 	}
 	if data == "" && f.Media.ISODev == "" {
