@@ -1,0 +1,65 @@
+Info: Dry run
+Info: Force to fix corruption
+Info: superblock features = 9 :  encrypt extra_attr
+Info: superblock encrypt level = 0, salt = 00000000000000000000000000000000
+Info: Segments per section = 1
+Info: Sections per zone = 1
+Info: total FS sectors = 985661440 (481280 MB)
+Info: CKPT version = 1741bce4
+Info: checkpoint state = 1 :  unmount
+[ASSERT] (fsck_chk_curseg_info:3151)  --> Incorrect curseg [4]: segno [0x43c] type(SIT) [0]
+[ASSERT] (sanity_check_nid: 492)  --> SIT bitmap is 0x0. blk_addr[0x4a200]
+[FSCK] Check node 1 / 9874 (0.01%)
+[ASSERT] (fsck_chk_data_blk:1875)  --> SIT bitmap is 0x0. blk_addr[0x4a800]
+[ASSERT] (sanity_check_nid: 492)  --> SIT bitmap is 0x0. blk_addr[0x4aa00]
+[ASSERT] (sanity_check_nid: 492)  --> SIT bitmap is 0x0. blk_addr[0x4aa01]
+[ASSERT] (fsck_chk_data_blk:1875)  --> SIT bitmap is 0x0. blk_addr[0x4ac00]
+[ASSERT] (fsck_chk_data_blk:1875)  --> SIT bitmap is 0x0. blk_addr[0x4ac04]
+[FSCK] Check node 988 / 9874 (10.01%)
+[FSCK] Check node 1975 / 9874 (20.01%)
+[FSCK] Check node 2962 / 9874 (30.01%)
+[FSCK] Check node 3949 / 9874 (40.01%)
+[FSCK] Check node 4936 / 9874 (50.01%)
+[FSCK] Check node 5923 / 9874 (60.01%)
+[FSCK] Check node 6910 / 9874 (70.01%)
+[FSCK] Check node 7897 / 9874 (80.01%)
+[FSCK] Check node 8884 / 9874 (90.01%)
+[FSCK] Check node 9871 / 9874 (100.01%)
+
+[FSCK] Max image size: 4420 MB, Free space: 476860 MB
+[FSCK] Unreachable nat entries                        [Ok..] [0x0]
+[FSCK] SIT valid block bitmap checking                [Fail]
+[FSCK] Hard link checking for regular file            [Ok..] [0x0]
+[FSCK] valid_block_count matching with CP             [Ok..] [0xca000]
+[FSCK] valid_node_count matching with CP (de lookup)  [Ok..] [0x2692]
+[FSCK] valid_node_count matching with CP (nat lookup) [Ok..] [0x2692]
+[FSCK] valid_inode_count matched with CP              [Ok..] [0x2410]
+[FSCK] free segment_count matched with CP             [Fail] [0x3a0e5]
+[FSCK] next block offset is free                      [Ok..]
+[FSCK] fixing SIT types
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x0] 0 -> 3
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x1] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x4] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x8] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0xd] 0 -> 5
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x43c] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x59c] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x5ae] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x5c0] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x5d0] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x5e2] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x5f4] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x63b] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x650] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x663] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x676] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x68a] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x69e] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x6b1] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x6c5] 0 -> 4
+[FIX] (check_sit_types:2622)  --> Wrong segment type [0x6d9] 0 -> 4
+[FSCK] other corrupted bugs                           [Fail]
+Info: Duplicate valid checkpoint to mirror position 1024 -> 512
+Info: Write valid nat_bits in checkpoint
+
+Done: 1.395104 secs

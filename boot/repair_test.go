@@ -29,6 +29,11 @@ func TestClassifyF2FSCheck(t *testing.T) {
 		}},
 		{"risky", 255, CheckNeedsUser, nil},
 		{"accounting-after", 0, CheckClean, nil},
+		{"sit-only", 1, CheckAccounting, []string{
+			"SIT valid block bitmap checking",
+			"free segment_count matched with CP",
+			"other corrupted bugs",
+		}},
 	} {
 		got, failed := ClassifyF2FSCheck(fsckOutput(t, c.name), c.exit)
 		if got != c.want {
@@ -37,6 +42,14 @@ func TestClassifyF2FSCheck(t *testing.T) {
 		if c.failed != nil && !reflect.DeepEqual(failed, c.failed) {
 			t.Errorf("%s: failed %q, want %q", c.name, failed, c.failed)
 		}
+	}
+	mixed := fsckOutput(t, "sit-only") + "[ASSERT] (sanity_check_nid: 429)  --> nid[0xa] nat_entry->ino[0x0] footer.ino[0xa]\n"
+	if v, _ := ClassifyF2FSCheck(mixed, 1); v != CheckNeedsUser {
+		t.Errorf("segment table damage with a node assertion: %s", v)
+	}
+	ssa := "[ASSERT] (fsck_chk_curseg_info:3163)  --> Incorrect curseg [4]: segno [0x43c] type(SSA) [0]\n[FSCK] other corrupted bugs                           [Fail]\n"
+	if v, _ := ClassifyF2FSCheck(ssa, 1); v != CheckNeedsUser {
+		t.Errorf("summary type damage: %s", v)
 	}
 	if v, _ := ClassifyF2FSCheck("Invalid SB CRC offset\n", 255); v != CheckNeedsUser {
 		t.Errorf("unreadable superblock: %s", v)

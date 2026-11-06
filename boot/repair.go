@@ -21,6 +21,30 @@ var accountingChecks = []string{
 	"valid_inode_count matched with CP",
 	"free segment_count matched with CP",
 	"next block offset is free",
+	"other corrupted bugs",
+}
+
+// tableOnly are the fsck.f2fs reports about the segment table that the
+// checker rebuilds from the node tree. fsck.f2fs prints them and carries on:
+// the node or block they name is still counted, so fixing them drops nothing.
+// Any other assertion makes a repair the user's decision.
+var tableOnly = [][]string{
+	{"--> SIT bitmap is 0x0. "},
+	{"--> Incorrect curseg [", "type(SIT)"},
+	{"--> Wrong segment type ["},
+}
+
+func tableOnlyReport(line string) bool {
+	for _, parts := range tableOnly {
+		all := true
+		for _, p := range parts {
+			all = all && strings.Contains(line, p)
+		}
+		if all {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckVerdict is what a read-only fsck.f2fs run says about a partition.
@@ -53,7 +77,7 @@ func ClassifyF2FSCheck(out string, exit int) (CheckVerdict, []string) {
 	var failed []string
 	risky := false
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "[ASSERT]") || strings.Contains(line, "[FIX]") {
+		if (strings.Contains(line, "[ASSERT]") || strings.Contains(line, "[FIX]")) && !tableOnlyReport(line) {
 			risky = true
 		}
 		if !strings.HasPrefix(line, "[FSCK] ") || !strings.Contains(line, "[Fail]") {
