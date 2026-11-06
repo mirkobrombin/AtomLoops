@@ -187,3 +187,53 @@ func TestSyncBootStateFromWAL(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPromoteSlotsSurvivesAPowerCutAtEveryStep(t *testing.T) {
+	real := promoteStep
+	defer func() { promoteStep = real }()
+	sets := []struct{ dir, prefix, a, b string }{
+		{"rfs", "rootfs", ".erofs", ".hash"},
+		{"esp", "kernelcache", ".efi", ".efi.sig"},
+	}
+	for cut := 0; ; cut++ {
+		root := t.TempDir()
+		dirs := StageDirs{Rootfs: filepath.Join(root, "rfs"), ESP: filepath.Join(root, "esp")}
+		for _, st := range sets {
+			d := filepath.Join(root, st.dir)
+			os.MkdirAll(d, 0o755)
+			for _, v := range []string{"prev", "active", "next"} {
+				os.WriteFile(filepath.Join(d, st.prefix+"-"+v+st.a), []byte("v-"+v), 0o644)
+				os.WriteFile(filepath.Join(d, st.prefix+"-"+v+st.b), []byte("v-"+v), 0o644)
+			}
+		}
+		steps := 0
+		promoteStep = func(copyFile bool, src, dst string) error {
+			if steps == cut {
+				return os.ErrDeadlineExceeded
+			}
+			steps++
+			return real(copyFile, src, dst)
+		}
+		err := PromoteSlots(dirs)
+		for _, st := range sets {
+			d := filepath.Join(root, st.dir)
+			for _, want := range []string{"v-active", "v-next"} {
+				found := false
+				for _, v := range []string{"prev", "active", "next"} {
+					x, _ := os.ReadFile(filepath.Join(d, st.prefix+"-"+v+st.a))
+					y, _ := os.ReadFile(filepath.Join(d, st.prefix+"-"+v+st.b))
+					found = found || (string(x) == want && string(y) == want)
+				}
+				if !found {
+					t.Fatalf("cut after %d steps: no complete %s set for %s", cut, st.prefix, want)
+				}
+			}
+		}
+		if err == nil {
+			if cut < 8 {
+				t.Fatalf("promotion finished in %d steps, want 8", cut)
+			}
+			return
+		}
+	}
+}

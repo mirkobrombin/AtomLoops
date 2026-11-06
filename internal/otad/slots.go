@@ -285,37 +285,43 @@ func PromoteSlots(dirs StageDirs) error {
 		return err
 	}
 	for _, g := range groups {
+		var moving []string
 		for _, s := range g.suffixes {
 			next := filepath.Join(g.dir, g.prefix+"-next"+s)
 			active := filepath.Join(g.dir, g.prefix+"-active"+s)
-			prev := filepath.Join(g.dir, g.prefix+"-prev"+s)
 			if !nonEmpty(next) {
 				continue
 			}
-			if g.prefix == "kernelcache" {
-				if sameFileContent(active, next) {
-					continue
-				}
-				if err := copyFileSync(active, prev); err != nil {
-					return fmt.Errorf("promote: %s%s active->prev: %w", g.prefix, s, err)
-				}
-				if err := copyFileSync(next, active); err != nil {
-					return fmt.Errorf("promote: %s%s next->active: %w", g.prefix, s, err)
-				}
+			if g.prefix == "kernelcache" && sameFileContent(active, next) {
 				continue
 			}
-			if sameFileIdentity(active, next) {
+			if g.prefix != "kernelcache" && sameFileIdentity(active, next) {
 				continue
 			}
-			if err := linkFileSync(active, prev); err != nil {
-				return fmt.Errorf("promote: %s%s active->prev: %w", g.prefix, s, err)
+			moving = append(moving, s)
+		}
+		for _, from := range []string{"-active", "-next"} {
+			to := "-prev"
+			if from == "-next" {
+				to = "-active"
 			}
-			if err := linkFileSync(next, active); err != nil {
-				return fmt.Errorf("promote: %s%s next->active: %w", g.prefix, s, err)
+			for _, s := range moving {
+				src := filepath.Join(g.dir, g.prefix+from+s)
+				dst := filepath.Join(g.dir, g.prefix+to+s)
+				if err := promoteStep(g.prefix == "kernelcache", src, dst); err != nil {
+					return fmt.Errorf("promote: %s%s %s->%s: %w", g.prefix, s, from[1:], to[1:], err)
+				}
 			}
 		}
 	}
 	return nil
+}
+
+var promoteStep = func(copyFile bool, src, dst string) error {
+	if copyFile {
+		return copyFileSync(src, dst)
+	}
+	return linkFileSync(src, dst)
 }
 
 // CleanupNextSlots runs only after promotion is committed. Failure is harmless:
