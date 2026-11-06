@@ -52,10 +52,25 @@ func (f FileCounter) Advance(to uint64) error {
 	if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(to, 10)), 0o600); err != nil {
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, f.Path)
+	if _, err := out.WriteString(strconv.FormatUint(to, 10)); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, f.Path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(f.Path))
 }
 
 // CommandCounter is a CounterStore backed by external shell commands, so the real

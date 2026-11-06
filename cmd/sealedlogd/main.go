@@ -134,12 +134,37 @@ func publishPub(state, espDir string, pub []byte) error {
 	return writeAtomic(dst, pub)
 }
 
+const sysSyncfs = 306
+
 func writeAtomic(path string, b []byte) error {
 	tmp := path + ".new"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	d, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if _, _, errno := syscall.Syscall(sysSyncfs, d.Fd(), 0, 0); errno != 0 {
+		return errno
+	}
+	return nil
 }
 
 func serve(args []string) error {

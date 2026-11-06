@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // BakSuffix is appended to the WAL path for the backup copy.
@@ -89,6 +90,8 @@ func writeFileSync(path string, data []byte) error {
 	return fsyncDir(dir)
 }
 
+const sysSyncfs = 306
+
 func fsyncDir(dir string) error {
 	df, err := os.Open(dir)
 	if err != nil {
@@ -99,6 +102,9 @@ func fsyncDir(dir string) error {
 	// not a durability failure for the rename we already completed.
 	if err := df.Sync(); err != nil && !isEINVAL(err) {
 		return err
+	}
+	if _, _, errno := syscall.Syscall(sysSyncfs, df.Fd(), 0, 0); errno != 0 {
+		return errno
 	}
 	return nil
 }

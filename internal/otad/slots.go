@@ -91,11 +91,7 @@ func WriteBootState(path string, b BootState) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return err
 	}
-	if d, derr := os.Open(dir); derr == nil { // best-effort dir fsync (FAT may not support it)
-		_ = d.Sync()
-		_ = d.Close()
-	}
-	return nil
+	return syncDir(dir)
 }
 
 // ReadBootState parses the ESP boot-state (the same fields the loader reads).
@@ -186,6 +182,16 @@ func syncDir(dir string) error {
 		!errors.Is(err, syscall.EINVAL) &&
 		!errors.Is(err, syscall.ENOTSUP) {
 		return err
+	}
+	return syncFS(d)
+}
+
+// syncFS writes back every inode of the filesystem holding f. On FAT a renamed
+// file keeps a zero size in its new directory entry until its inode is written
+// back, which neither the file nor the directory fsync before the rename does.
+func syncFS(f *os.File) error {
+	if _, _, errno := syscall.Syscall(sysSyncfs, f.Fd(), 0, 0); errno != 0 {
+		return errno
 	}
 	return nil
 }
