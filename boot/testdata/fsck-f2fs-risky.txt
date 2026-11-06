@@ -1,0 +1,27 @@
+Info: Dry run
+Info: Force to fix corruption
+Info: superblock features = 0 : 
+Info: superblock encrypt level = 0, salt = 00000000000000000000000000000000
+Info: Segments per section = 1
+Info: Sections per zone = 1
+Info: total FS sectors = 2097152 (1024 MB)
+Info: Checked valid nat_bits in checkpoint
+Info: checkpoint state = 181 :  trimmed nat_bits unmount
+[ASSERT] (sanity_check_nid: 429)  --> nid[0xa] nat_entry->ino[0xa] footer.ino[0x0]
+[FIX] (__chk_dentries:1739)  --> Unlink [0xa] - f103 len[0x4], type[0x1]
+
+NID[0xa] is unreachable, blkaddr:0x1e06
+[FSCK] Max image size: 26 MB, Free space: 998 MB
+[FSCK] Unreachable nat entries                        [Fail] [0x1]
+[FSCK] SIT valid block bitmap checking                [Fail]
+[FSCK] Hard link checking for regular file            [Ok..] [0x0]
+[FSCK] valid_block_count matching with CP             [Fail] [0x3ab]
+[FSCK] valid_node_count matching with CP (de lookup)  [Fail] [0xcb]
+[FSCK] valid_node_count matching with CP (nat lookup) [Ok..] [0xcc]
+[FSCK] valid_inode_count matched with CP              [Fail] [0xcb]
+[FSCK] free segment_count matched with CP             [Ok..] [0x1ed]
+[FSCK] next block offset is free                      [Ok..]
+[FSCK] fixing SIT types
+[FSCK] other corrupted bugs                           [Fail]
+
+Do you want to restore lost files into ./lost_found/? [Y/N] [ASSERT] (fsck_verify:3345) res >= 0

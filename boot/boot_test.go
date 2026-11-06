@@ -381,7 +381,7 @@ func TestUnmountableDataIsNotAHashMismatch(t *testing.T) {
 	if !errors.As(err, &unmountable) {
 		t.Fatalf("got %v, want a data partition mount failure", err)
 	}
-	if len(unmountable.Partitions) != 1 || unmountable.Partitions[0] != "/dev/nvme0n1p2 (f2fs)" {
+	if len(unmountable.Partitions) != 1 || unmountable.Partitions[0] != (UnmountablePartition{Dev: "/dev/nvme0n1p2", FS: "f2fs"}) {
 		t.Errorf("partitions %v", unmountable.Partitions)
 	}
 	f = installed()

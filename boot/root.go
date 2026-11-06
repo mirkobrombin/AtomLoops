@@ -135,7 +135,14 @@ type Media struct {
 	ISOHash    string
 	// Unmountable lists partitions that carry a data filesystem the kernel
 	// refused to mount on the last scan.
-	Unmountable []string
+	Unmountable []UnmountablePartition
+}
+
+// UnmountablePartition is a partition whose superblock names a data
+// filesystem the kernel refused to mount.
+type UnmountablePartition struct {
+	Dev string
+	FS  string
 }
 
 // FindData mounts the data partition read-only, the first partition that
@@ -154,7 +161,7 @@ func (m *Media) FindData(cfg *Config, ops Ops) {
 			if ops.FSType != nil {
 				if t := ops.FSType(p.Dev); t != "" {
 					Logf("data partition candidate %s (%s) cannot be mounted", p.Dev, t)
-					m.Unmountable = append(m.Unmountable, p.Dev+" ("+t+")")
+					m.Unmountable = append(m.Unmountable, UnmountablePartition{Dev: p.Dev, FS: t})
 				}
 			}
 			continue
@@ -278,11 +285,15 @@ func SelectRoot(cfg Config, m *Media, ops Ops) (*Root, error) {
 // carries a filesystem the kernel refuses to mount, so no slot could be read
 // and no root hash was ever compared.
 type DataUnmountableError struct {
-	Partitions []string
+	Partitions []UnmountablePartition
 }
 
 func (e *DataUnmountableError) Error() string {
-	return "data partition cannot be mounted, root slots unreachable: " + strings.Join(e.Partitions, ", ")
+	var parts []string
+	for _, p := range e.Partitions {
+		parts = append(parts, p.Dev+" ("+p.FS+")")
+	}
+	return "data partition cannot be mounted, root slots unreachable: " + strings.Join(parts, ", ")
 }
 
 func (cfg *Config) portablePart(p Partition, names ...string) bool {

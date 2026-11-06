@@ -1,0 +1,24 @@
+Info: Dry run
+Info: Force to fix corruption
+Info: superblock features = 0 : 
+Info: superblock encrypt level = 0, salt = 00000000000000000000000000000000
+Info: Segments per section = 1
+Info: Sections per zone = 1
+Info: total FS sectors = 2097152 (1024 MB)
+Info: Checked valid nat_bits in checkpoint
+Info: checkpoint state = 381 :  allow_nocrc trimmed nat_bits unmount
+
+[FSCK] Max image size: 26 MB, Free space: 998 MB
+[FSCK] Unreachable nat entries                        [Ok..] [0x0]
+[FSCK] SIT valid block bitmap checking                [Ok..]
+[FSCK] Hard link checking for regular file            [Ok..] [0x0]
+[FSCK] valid_block_count matching with CP             [Ok..] [0x3ac]
+[FSCK] valid_node_count matching with CP (de lookup)  [Ok..] [0xcc]
+[FSCK] valid_node_count matching with CP (nat lookup) [Ok..] [0xcc]
+[FSCK] valid_inode_count matched with CP              [Ok..] [0xcc]
+[FSCK] free segment_count matched with CP             [Ok..] [0x1ed]
+[FSCK] next block offset is free                      [Ok..]
+[FSCK] fixing SIT types
+[FSCK] other corrupted bugs                           [Ok..]
+
+Done: 0.005793 secs
