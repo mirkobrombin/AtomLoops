@@ -271,3 +271,21 @@ func MountedFS(path string) string {
 	}
 	return fstype
 }
+
+// FSType names the data filesystem whose superblock sits on dev: "f2fs",
+// "ext4", or "" when neither is found.
+func FSType(dev string) string {
+	f, err := os.Open(dev)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	b := make([]byte, 64)
+	if n, _ := f.ReadAt(b[:4], 1024); n == 4 && b[0] == 0x10 && b[1] == 0x20 && b[2] == 0xf5 && b[3] == 0xf2 {
+		return "f2fs"
+	}
+	if n, _ := f.ReadAt(b[:2], 1024+56); n == 2 && b[0] == 0x53 && b[1] == 0xef {
+		return "ext4"
+	}
+	return ""
+}

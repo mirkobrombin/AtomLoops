@@ -364,3 +364,33 @@ func TestLinkStandardDevices(t *testing.T) {
 		}
 	}
 }
+
+func TestUnmountableDataIsNotAHashMismatch(t *testing.T) {
+	f := installed()
+	f.files["/dev/nvme0n1p2:data"] = false
+	ops := f.ops()
+	ops.FSType = func(dev string) string {
+		if dev == "/dev/nvme0n1p2" {
+			return "f2fs"
+		}
+		return ""
+	}
+	var m Media
+	_, err := SelectRoot(Config{RootHash: goodHash, Attempts: 2}, &m, ops)
+	var unmountable *DataUnmountableError
+	if !errors.As(err, &unmountable) {
+		t.Fatalf("got %v, want a data partition mount failure", err)
+	}
+	if len(unmountable.Partitions) != 1 || unmountable.Partitions[0] != "/dev/nvme0n1p2 (f2fs)" {
+		t.Errorf("partitions %v", unmountable.Partitions)
+	}
+	f = installed()
+	f.erofs["/sysdata/boot/rootfs/rootfs-active.erofs"] = true
+	ops = f.ops()
+	ops.FSType = func(string) string { return "f2fs" }
+	m = Media{}
+	_, err = SelectRoot(Config{RootHash: goodHash, Attempts: 1}, &m, ops)
+	if errors.As(err, &unmountable) {
+		t.Error("a mounted data partition with no matching slot is a hash mismatch, not a mount failure")
+	}
+}

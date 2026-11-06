@@ -70,6 +70,7 @@ type Ops struct {
 	HashRoot     func(dev string) (string, uint64)
 	DevBytes     func(dev string) uint64
 	MountISO     func(dev, dir string) bool
+	FSType       func(dev string) string
 	DiskOf       func(dev string) string
 	Sleep        func(time.Duration)
 }
@@ -117,6 +118,7 @@ func SystemOps() Ops {
 			os.MkdirAll(dir, 0755)
 			return syscall.Mount(dev, dir, "iso9660", syscall.MS_RDONLY, "") == nil
 		},
+		FSType: FSType,
 		DiskOf: DiskOf,
 		Sleep:  time.Sleep,
 	}
@@ -131,6 +133,9 @@ type Media struct {
 	ISODev     string
 	ISOData    string
 	ISOHash    string
+	// Unmountable lists partitions that carry a data filesystem the kernel
+	// refused to mount on the last scan.
+	Unmountable []string
 }
 
 // FindData mounts the data partition read-only, the first partition that
@@ -140,11 +145,18 @@ func (m *Media) FindData(cfg *Config, ops Ops) {
 	if m.DataDev != "" {
 		return
 	}
+	m.Unmountable = nil
 	for _, p := range ops.Partitions() {
 		if strings.HasPrefix(filepath.Base(p.Dev), "sr") {
 			continue
 		}
 		if !ops.MountData(p.Dev, cfg.DataMount) {
+			if ops.FSType != nil {
+				if t := ops.FSType(p.Dev); t != "" {
+					Logf("data partition candidate %s (%s) cannot be mounted", p.Dev, t)
+					m.Unmountable = append(m.Unmountable, p.Dev+" ("+t+")")
+				}
+			}
 			continue
 		}
 		slots := ops.Glob(cfg.DataMount + "/boot/rootfs/rootfs-*.erofs")
@@ -256,7 +268,21 @@ func SelectRoot(cfg Config, m *Media, ops Ops) (*Root, error) {
 		}
 		ops.Sleep(cfg.Interval)
 	}
+	if m.DataDev == "" && m.ISODev == "" && len(m.Unmountable) > 0 {
+		return nil, &DataUnmountableError{Partitions: m.Unmountable}
+	}
 	return nil, errors.New("no root image matches the signed root hash")
+}
+
+// DataUnmountableError reports that the partition holding the root slots
+// carries a filesystem the kernel refuses to mount, so no slot could be read
+// and no root hash was ever compared.
+type DataUnmountableError struct {
+	Partitions []string
+}
+
+func (e *DataUnmountableError) Error() string {
+	return "data partition cannot be mounted, root slots unreachable: " + strings.Join(e.Partitions, ", ")
 }
 
 func (cfg *Config) portablePart(p Partition, names ...string) bool {
