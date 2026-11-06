@@ -3,6 +3,7 @@ package boot
 import (
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -93,6 +94,19 @@ func TestRepairF2FS(t *testing.T) {
 	for _, c := range calls {
 		if c[1] != "--dry-run" {
 			t.Errorf("risky damage ran %v", c)
+		}
+	}
+}
+
+func TestRepairReportKeepsBothEndsOfALongOutput(t *testing.T) {
+	long := "first" + strings.Repeat("x", 1<<20) + "last"
+	rep := Repair{Dev: "/dev/vda2", Verdict: CheckAccounting, Fixed: true, Fix: long}.Report("SINTYREPAIR")
+	if len(rep) > 4*reportSection {
+		t.Fatalf("report is %d bytes", len(rep))
+	}
+	for _, want := range []string{"SINTYREPAIR dev=/dev/vda2 verdict=accounting fixed=true", "first", "last", "bytes left out"} {
+		if !strings.Contains(rep, want) {
+			t.Fatalf("report lacks %q", want)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package boot
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -145,4 +146,24 @@ func RepairF2FS(dev string, run Runner) Repair {
 	r.Fixed = after == CheckClean
 	Logf("data repair %s: fixed=%v", dev, r.Fixed)
 	return r
+}
+
+const reportSection = 32 << 10
+
+// Report renders the check, the fix and the recheck under a heading line.
+// Each output keeps its first and last 16 KiB: fsck.f2fs can print a line per
+// block, and the report has to fit on the ESP next to the boot images.
+func (r Repair) Report(tag string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s dev=%s verdict=%s fixed=%v failed=%q\n", tag, r.Dev, r.Verdict, r.Fixed, r.Failed)
+	fmt.Fprintf(&b, "--- check\n%s\n--- fix\n%s\n--- recheck\n%s\n", clip(r.Before), clip(r.Fix), clip(r.After))
+	return b.String()
+}
+
+func clip(s string) string {
+	if len(s) <= reportSection {
+		return s
+	}
+	half := reportSection / 2
+	return fmt.Sprintf("%s\n[... %d bytes left out ...]\n%s", s[:half], len(s)-reportSection, s[len(s)-half:])
 }
