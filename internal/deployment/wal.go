@@ -34,6 +34,9 @@ func readOne(path string) (*Deployment, error) {
 	if err := json.Unmarshal(b, &d); err != nil {
 		return nil, err
 	}
+	if d.RootFS.Pending == "" {
+		d.RootFS.PendingHash = ""
+	}
 	return &d, nil
 }
 

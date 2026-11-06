@@ -107,6 +107,7 @@ func (d *Deployment) promote() {
 	d.RootFS.LastKnownGood = d.RootFS.Current
 	d.RootFS.LastKnownGoodAt = timestamp()
 	d.RootFS.Pending = ""
+	d.RootFS.PendingHash = ""
 	d.RootFS.BootAttempts = 0
 	d.Kernelcache.PendingVersion = 0
 	d.Kernelcache.StableBoots = 0
@@ -256,6 +257,7 @@ func (d *Deployment) Rollback() {
 		d.Kernelcache.CurrentVersion = kc
 	}
 	d.RootFS.Pending = ""
+	d.RootFS.PendingHash = ""
 	d.RootFS.BootAttempts = 0
 	d.Kernelcache.PendingVersion = 0
 	d.Kernelcache.StableBoots = 0

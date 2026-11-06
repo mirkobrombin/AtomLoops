@@ -208,3 +208,45 @@ func TestRecoveryWhenNoGoodFallback(t *testing.T) {
 		t.Fatalf("NeedsRecovery false but no fallback exists: attempts=%d lkg=%q", d.RootFS.BootAttempts, d.RootFS.LastKnownGood)
 	}
 }
+
+func TestPendingHashLeavesWithTheCandidate(t *testing.T) {
+	d := New("dev-1", "v1")
+	d.Deploy("v2")
+	d.RootFS.PendingHash = "aa"
+	for i := 0; i < d.Kernelcache.StableThreshold; i++ {
+		d.RecordGoodBoot(true)
+	}
+	if d.HasPending() || d.RootFS.PendingHash != "" {
+		t.Fatalf("after promotion pending=%q pending_hash=%q", d.RootFS.Pending, d.RootFS.PendingHash)
+	}
+	d.Deploy("v3")
+	d.RootFS.PendingHash = "bb"
+	d.Rollback()
+	if d.HasPending() || d.RootFS.PendingHash != "" {
+		t.Fatalf("after rollback pending=%q pending_hash=%q", d.RootFS.Pending, d.RootFS.PendingHash)
+	}
+}
+
+func TestLoadDropsAnOrphanPendingHash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deployment.json")
+	d := New("dev-1", "v1")
+	d.RootFS.PendingHash = "aa"
+	if err := d.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RootFS.PendingHash != "" {
+		t.Fatalf("orphan pending_hash kept: %q", got.RootFS.PendingHash)
+	}
+	got.Deploy("v2")
+	got.RootFS.PendingHash = "bb"
+	if err := got.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := Load(path); again.RootFS.PendingHash != "bb" {
+		t.Fatalf("candidate pending_hash lost: %q", again.RootFS.PendingHash)
+	}
+}
