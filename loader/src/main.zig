@@ -14,7 +14,7 @@ comptime {
     if (@embedFile("root.pub").len < 32) @compileError("loader/src/root.pub must be a 32-byte raw Ed25519 public key");
 }
 
-const loader_version = "3";
+const loader_version = "4";
 export const atom_loader_marker = "ATOM-LOADER-VERSION=" ++ loader_version ++ ";";
 
 fn puts(s: []const u8) void {
