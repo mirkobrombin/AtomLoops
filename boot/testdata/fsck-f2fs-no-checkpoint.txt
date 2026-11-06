@@ -1,0 +1,10 @@
+Info: Dry run
+Info: Force to fix corruption
+Info: superblock features = 9 :  encrypt extra_attr
+Info: superblock encrypt level = 0, salt = 00000000000000000000000000000000
+Info: Segments per section = 1
+Info: Sections per zone = 1
+Info: total FS sectors = 133689344 (65278 MB)
+	Invalid CP CRC: offset:4092, crc:0x0, calc:0x21a77b64
+	Invalid CP CRC: offset:4092, crc:0x0, calc:0xdbbd5e80
+[f2fs_do_mount:3637] Can't find valid checkpoint

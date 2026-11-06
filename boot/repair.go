@@ -60,6 +60,9 @@ const (
 	// CheckNeedsUser means a fix could remove files or the output is not
 	// understood; only the user may decide.
 	CheckNeedsUser
+	// CheckUnrepairable means the checker found no valid superblock or
+	// checkpoint to start from, so no repair can bring the partition back.
+	CheckUnrepairable
 )
 
 func (v CheckVerdict) String() string {
@@ -68,6 +71,8 @@ func (v CheckVerdict) String() string {
 		return "clean"
 	case CheckAccounting:
 		return "accounting"
+	case CheckUnrepairable:
+		return "unrepairable"
 	}
 	return "needs-user"
 }
@@ -75,6 +80,9 @@ func (v CheckVerdict) String() string {
 // ClassifyF2FSCheck reads the output and exit status of fsck.f2fs --dry-run
 // and returns the verdict with the failed checks it found.
 func ClassifyF2FSCheck(out string, exit int) (CheckVerdict, []string) {
+	if unrepairableF2FS(out) {
+		return CheckUnrepairable, nil
+	}
 	var failed []string
 	risky := false
 	for _, line := range strings.Split(out, "\n") {
@@ -98,6 +106,11 @@ func ClassifyF2FSCheck(out string, exit int) (CheckVerdict, []string) {
 		return CheckAccounting, failed
 	}
 	return CheckNeedsUser, failed
+}
+
+func unrepairableF2FS(out string) bool {
+	return strings.Contains(out, "Can't find valid checkpoint") ||
+		strings.Contains(out, "Can't find a valid F2FS superblock at 0x1")
 }
 
 // Repair is the record of one boot-time repair attempt on a data partition.

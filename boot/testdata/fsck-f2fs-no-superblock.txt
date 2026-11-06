@@ -1,0 +1,6 @@
+Info: Dry run
+Info: Force to fix corruption
+Magic Mismatch, valid(0xf2f52010) - read(0x0)
+	Can't find a valid F2FS superblock at 0x0
+Magic Mismatch, valid(0xf2f52010) - read(0x0)
+	Can't find a valid F2FS superblock at 0x1

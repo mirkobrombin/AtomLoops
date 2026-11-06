@@ -35,6 +35,8 @@ func TestClassifyF2FSCheck(t *testing.T) {
 			"free segment_count matched with CP",
 			"other corrupted bugs",
 		}},
+		{"no-checkpoint", 255, CheckUnrepairable, nil},
+		{"no-superblock", 255, CheckUnrepairable, nil},
 	} {
 		got, failed := ClassifyF2FSCheck(fsckOutput(t, c.name), c.exit)
 		if got != c.want {
