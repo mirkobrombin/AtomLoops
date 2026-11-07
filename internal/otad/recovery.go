@@ -108,6 +108,11 @@ func StageRecovery(ctx context.Context, walPath, manifestURL, revocationURL stri
 	if RecoveryIsCurrent(dirs, &m) {
 		return "recovery: already current", nil
 	}
+	if have, err := strconv.Atoi(d.Recovery.Version); err == nil && have >= m.RecoveryVersion {
+		if _, err := os.Stat(filepath.Join(dirs.ESP, recoveryFile)); err == nil {
+			return fmt.Sprintf("recovery: version %d is installed, the release carries %d, keeping it", have, m.RecoveryVersion), nil
+		}
+	}
 	os.Remove(filepath.Join(dirs.ESP, "kernelcache-next.efi"))
 	next := filepath.Join(dirs.ESP, recoveryNextFile)
 	cleanup := func() {

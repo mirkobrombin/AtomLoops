@@ -107,6 +107,24 @@ func TestStageRecoveryRefusesBadSignature(t *testing.T) {
 	}
 }
 
+func TestStageRecoveryKeepsANewerInstalledImage(t *testing.T) {
+	manifest, rootPub := newRecoveryFeed(t, []byte("MZ older recovery"), nil)
+	dirs := recoveryDirs(t)
+	wal := e2eWAL(t)
+	d, _ := deployment.Load(wal)
+	d.Recovery.Version = "4"
+	if err := d.Save(wal); err != nil {
+		t.Fatal(err)
+	}
+	msg, err := StageRecovery(context.Background(), wal, manifest, "", rootPub, dirs)
+	if err != nil || !strings.Contains(msg, "keeping it") {
+		t.Fatalf("StageRecovery = %q, %v", msg, err)
+	}
+	if got := readFileT(t, filepath.Join(dirs.ESP, recoveryFile)); got != "MZ old recovery" {
+		t.Fatal("newer installed recovery replaced by an older release")
+	}
+}
+
 func TestRepairRecoverySlotRestoresInterruptedSwap(t *testing.T) {
 	dirs := recoveryDirs(t)
 	cur := filepath.Join(dirs.ESP, recoveryFile)
