@@ -171,9 +171,16 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	// hardware and target kernel). The deploy, promote, and summary steps below run
 	// over staged, never the full list, so a bundle skipped here is never marked
 	// deployed or activated (which would promote a slot that was never written).
+	installed, err := deployment.Load(walPath)
+	if err != nil {
+		return "", err
+	}
 	staged := make([]FirmwareBundleSpec, 0, len(bundles))
 	for _, fw := range bundles {
 		if !fw.MatchesHardware(chips, kernel) {
+			continue
+		}
+		if b, ok := installed.Firmware.Bundles[fw.Name]; ok && fw.Version <= b.MinVersion {
 			continue
 		}
 		staged = append(staged, fw)

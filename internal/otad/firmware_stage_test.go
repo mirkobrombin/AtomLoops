@@ -22,6 +22,47 @@ import (
 // verified and staged on its own independent slot, and marked pending in the WAL
 // via the firmware anti-rollback path, without disturbing the rootfs track.
 func TestStageFirmwareTrack(t *testing.T) {
+	url, rootPub, m := firmwareStageServer(t)
+	wal := newWALFile(t)
+	dirs := StageDirs{
+		Rootfs:   filepath.Join(t.TempDir(), "rootfs"),
+		ESP:      filepath.Join(t.TempDir(), "esp"),
+		Firmware: filepath.Join(t.TempDir(), "firmware"),
+	}
+
+	msg, err := Stage(context.Background(), wal, url+"/manifest.json", "", rootPub, dirs)
+	if err != nil {
+		t.Fatalf("Stage with firmware: %v", err)
+	}
+	if !strings.Contains(msg, "default v5") {
+		t.Errorf("stage message should report the staged firmware bundle: %q", msg)
+	}
+	// The legacy single-firmware manifest folds into a bundle named "default"; staging
+	// activates its slot (next -> active) in the bundle subdir so the next boot mounts it.
+	bdir := filepath.Join(dirs.Firmware, "default")
+	if _, err := os.Stat(filepath.Join(bdir, "firmware-active.img")); err != nil {
+		t.Errorf("firmware not activated: %v", err)
+	}
+	// The boot trust anchor is persisted beside the image and re-verifies offline to
+	// the staged bundle's verity hash, keyed to the same root pubkey the daemon uses.
+	hash, ver, err := VerifyFirmwareAnchor(bdir, "active", rootPub, time.Now(), "default")
+	if err != nil {
+		t.Fatalf("staged firmware anchor does not verify: %v", err)
+	}
+	if hash != m.FirmwareVerityHash || ver != m.FirmwareVersion {
+		t.Errorf("anchor hash/ver = %q/%d, want %q/%d", hash, ver, m.FirmwareVerityHash, m.FirmwareVersion)
+	}
+	d, _ := deployment.Load(wal)
+	if !d.HasPendingFirmware("default") || d.Firmware.Bundle("default").PendingVersion != 5 {
+		t.Fatalf("firmware track not pending: %+v", d.Firmware.Bundle("default"))
+	}
+	// The rootfs track is staged independently and unaffected.
+	if d.RootFS.Pending != "v2" {
+		t.Fatalf("rootfs track disturbed by firmware staging: %+v", d.RootFS)
+	}
+}
+
+func firmwareStageServer(t *testing.T) (string, ed25519.PublicKey, Manifest) {
 	rootfs := []byte("EROFS rootfs image v2 contents")
 	kernel := []byte("UKI kernelcache v2 contents")
 	firmware := []byte("signed firmware add-on image v5 contents")
@@ -77,41 +118,35 @@ func TestStageFirmwareTrack(t *testing.T) {
 	mux.HandleFunc("/signing-cert.json", func(w http.ResponseWriter, r *http.Request) { w.Write(certBytes) })
 	mux.HandleFunc("/signing-cert.json.sig", func(w http.ResponseWriter, r *http.Request) { w.Write(certSig) })
 
+	return srv.URL, rootPub, m
+}
+
+func TestStageSkipsInstalledFirmwareBundle(t *testing.T) {
+	url, rootPub, _ := firmwareStageServer(t)
 	wal := newWALFile(t)
+	d, _ := deployment.Load(wal)
+	b := d.Firmware.Bundle("default")
+	b.CurrentVersion, b.MinVersion = 5, 5
+	if err := d.Save(wal); err != nil {
+		t.Fatal(err)
+	}
 	dirs := StageDirs{
 		Rootfs:   filepath.Join(t.TempDir(), "rootfs"),
 		ESP:      filepath.Join(t.TempDir(), "esp"),
 		Firmware: filepath.Join(t.TempDir(), "firmware"),
 	}
-
-	msg, err := Stage(context.Background(), wal, srv.URL+"/manifest.json", "", rootPub, dirs)
+	msg, err := Stage(context.Background(), wal, url+"/manifest.json", "", rootPub, dirs)
 	if err != nil {
-		t.Fatalf("Stage with firmware: %v", err)
+		t.Fatalf("Stage with an installed firmware bundle: %v", err)
 	}
-	if !strings.Contains(msg, "default v5") {
-		t.Errorf("stage message should report the staged firmware bundle: %q", msg)
+	if strings.Contains(msg, "default v5") {
+		t.Errorf("installed bundle staged again: %q", msg)
 	}
-	// The legacy single-firmware manifest folds into a bundle named "default"; staging
-	// activates its slot (next -> active) in the bundle subdir so the next boot mounts it.
-	bdir := filepath.Join(dirs.Firmware, "default")
-	if _, err := os.Stat(filepath.Join(bdir, "firmware-active.img")); err != nil {
-		t.Errorf("firmware not activated: %v", err)
+	if _, err := os.Stat(filepath.Join(dirs.Firmware, "default", "firmware-next.img")); !os.IsNotExist(err) {
+		t.Errorf("installed bundle downloaded again: %v", err)
 	}
-	// The boot trust anchor is persisted beside the image and re-verifies offline to
-	// the staged bundle's verity hash, keyed to the same root pubkey the daemon uses.
-	hash, ver, err := VerifyFirmwareAnchor(bdir, "active", rootPub, time.Now(), "default")
-	if err != nil {
-		t.Fatalf("staged firmware anchor does not verify: %v", err)
-	}
-	if hash != m.FirmwareVerityHash || ver != m.FirmwareVersion {
-		t.Errorf("anchor hash/ver = %q/%d, want %q/%d", hash, ver, m.FirmwareVerityHash, m.FirmwareVersion)
-	}
-	d, _ := deployment.Load(wal)
-	if !d.HasPendingFirmware("default") || d.Firmware.Bundle("default").PendingVersion != 5 {
-		t.Fatalf("firmware track not pending: %+v", d.Firmware.Bundle("default"))
-	}
-	// The rootfs track is staged independently and unaffected.
-	if d.RootFS.Pending != "v2" {
-		t.Fatalf("rootfs track disturbed by firmware staging: %+v", d.RootFS)
+	d, _ = deployment.Load(wal)
+	if d.HasPendingFirmware("default") || d.RootFS.Pending != "v2" {
+		t.Fatalf("firmware %+v rootfs %+v", d.Firmware.Bundle("default"), d.RootFS)
 	}
 }
