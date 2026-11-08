@@ -54,6 +54,11 @@ func MountFirmware(rootPubPath string) {
 			Logf("firmware bundle %s %v, skipped", name, err)
 			continue
 		}
+		if !pciWanted(b.mnt + "/.pci-vendors") {
+			Logf("firmware bundle %s matches no device here, skipped", name)
+			b.release()
+			continue
+		}
 		if data, err := os.ReadFile(b.mnt + "/.overlay"); err == nil {
 			target, version, ok := parseOverlay(string(data))
 			if !ok || !overlayWanted(NewRoot, target, version) {
@@ -267,4 +272,30 @@ func kernelRelease() string {
 		b = append(b, byte(c))
 	}
 	return string(b)
+}
+
+var PCIDevices = "/sys/bus/pci/devices"
+
+func pciWanted(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return true
+	}
+	present := map[string]bool{}
+	entries, _ := os.ReadDir(PCIDevices)
+	for _, e := range entries {
+		if v, err := os.ReadFile(filepath.Join(PCIDevices, e.Name(), "vendor")); err == nil {
+			present[strings.ToLower(strings.TrimSpace(string(v)))] = true
+		}
+	}
+	for _, f := range strings.Fields(string(data)) {
+		f = strings.ToLower(f)
+		if !strings.HasPrefix(f, "0x") {
+			f = "0x" + f
+		}
+		if present[f] {
+			return true
+		}
+	}
+	return false
 }
