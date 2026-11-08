@@ -417,3 +417,63 @@ func TestFindDataRemembersADataPartitionWithoutImages(t *testing.T) {
 		t.Fatalf("diagnosis %+v", d)
 	}
 }
+
+func TestFindDataPrefersTheDiskTheLoaderStartedFrom(t *testing.T) {
+	f := newFake()
+	f.parts = []Partition{
+		{Dev: "/dev/nvme0n1p1", Disk: "nvme0n1", PartUUID: "aaaa"},
+		{Dev: "/dev/nvme0n1p2", Disk: "nvme0n1", PartUUID: "bbbb"},
+		{Dev: "/dev/sda1", Disk: "sda", PartUUID: "cccc"},
+		{Dev: "/dev/sda2", Disk: "sda", PartUUID: "dddd"},
+	}
+	f.files["/dev/nvme0n1p2:data"] = true
+	f.files["/dev/sda2:data"] = true
+	f.files["/sysdata/boot/rootfs/rootfs-a.erofs"] = true
+	ops := f.ops()
+	for _, c := range []struct{ boot, want string }{{"cccc", "/dev/sda2"}, {"aaaa", "/dev/nvme0n1p2"}, {"", "/dev/nvme0n1p2"}, {"ffff", "/dev/nvme0n1p2"}} {
+		ops.BootPartUUID = func() string { return c.boot }
+		var m Media
+		for i := 0; i <= bootDiskWaits && m.DataDev == ""; i++ {
+			m.FindData(&Config{DataMount: "/sysdata"}, ops)
+		}
+		if m.DataDev != c.want {
+			t.Errorf("boot %q: data %q, want %q", c.boot, m.DataDev, c.want)
+		}
+	}
+}
+
+func TestFindDataWaitsForTheLoaderDisk(t *testing.T) {
+	f := newFake()
+	f.parts = []Partition{{Dev: "/dev/nvme0n1p1", Disk: "nvme0n1", PartUUID: "aaaa"}, {Dev: "/dev/nvme0n1p2", Disk: "nvme0n1", PartUUID: "bbbb"}}
+	f.files["/dev/nvme0n1p2:data"] = true
+	f.files["/dev/sda2:data"] = true
+	f.files["/sysdata/boot/rootfs/rootfs-a.erofs"] = true
+	ops := f.ops()
+	ops.BootPartUUID = func() string { return "cccc" }
+	var m Media
+	m.FindData(&Config{DataMount: "/sysdata"}, ops)
+	if m.DataDev != "" {
+		t.Fatalf("chose %s before the loader disk appeared", m.DataDev)
+	}
+	f.parts = append(f.parts, Partition{Dev: "/dev/sda1", Disk: "sda", PartUUID: "cccc"}, Partition{Dev: "/dev/sda2", Disk: "sda", PartUUID: "dddd"})
+	m.FindData(&Config{DataMount: "/sysdata"}, ops)
+	if m.DataDev != "/dev/sda2" {
+		t.Fatalf("data %q, want /dev/sda2", m.DataDev)
+	}
+}
+
+func TestFindDataStopsWaitingForAMissingLoaderDisk(t *testing.T) {
+	f := newFake()
+	f.parts = []Partition{{Dev: "/dev/nvme0n1p2", Disk: "nvme0n1", PartUUID: "bbbb"}}
+	f.files["/dev/nvme0n1p2:data"] = true
+	f.files["/sysdata/boot/rootfs/rootfs-a.erofs"] = true
+	ops := f.ops()
+	ops.BootPartUUID = func() string { return "cccc" }
+	var m Media
+	for i := 0; i <= bootDiskWaits && m.DataDev == ""; i++ {
+		m.FindData(&Config{DataMount: "/sysdata"}, ops)
+	}
+	if m.DataDev != "/dev/nvme0n1p2" || m.BootWaits != bootDiskWaits {
+		t.Fatalf("data %q after %d waits", m.DataDev, m.BootWaits)
+	}
+}

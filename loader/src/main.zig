@@ -116,6 +116,66 @@ fn renderSurface(root: *File) void {
     }
 }
 
+const loader_interface_guid align(8) = uefi.Guid{
+    .time_low = 0x4a67b082,
+    .time_mid = 0x0a4c,
+    .time_high_and_version = 0x41cf,
+    .clock_seq_high_and_reserved = 0xb6,
+    .clock_seq_low = 0xc7,
+    .node = [_]u8{ 0x44, 0x0b, 0x29, 0xbb, 0x8c, 0x4f },
+};
+
+fn hexDigits(out: []u16, bytes: []const u8) void {
+    const digits = "0123456789abcdef";
+    for (bytes, 0..) |b, i| {
+        out[i * 2] = digits[b >> 4];
+        out[i * 2 + 1] = digits[b & 0x0f];
+    }
+}
+
+fn partUUIDText(sig: [16]u8, out: *[37]u16) void {
+    var be: [16]u8 = undefined;
+    be[0] = sig[3];
+    be[1] = sig[2];
+    be[2] = sig[1];
+    be[3] = sig[0];
+    be[4] = sig[5];
+    be[5] = sig[4];
+    be[6] = sig[7];
+    be[7] = sig[6];
+    @memcpy(be[8..16], sig[8..16]);
+    hexDigits(out[0..8], be[0..4]);
+    out[8] = '-';
+    hexDigits(out[9..13], be[4..6]);
+    out[13] = '-';
+    hexDigits(out[14..18], be[6..8]);
+    out[18] = '-';
+    hexDigits(out[19..23], be[8..10]);
+    out[23] = '-';
+    hexDigits(out[24..36], be[10..16]);
+    out[36] = 0;
+}
+
+fn exportBootPartition() void {
+    const bs = uefi.system_table.boot_services orelse return;
+    const li = (bs.handleProtocol(uefi.protocol.LoadedImage, uefi.handle) catch return) orelse return;
+    const dev = li.device_handle orelse return;
+    const path = (bs.handleProtocol(uefi.protocol.DevicePath, dev) catch return) orelse return;
+    const HardDrive = uefi.DevicePath.Media.HardDriveDevicePath;
+    var node: ?*const uefi.protocol.DevicePath = path;
+    while (node) |n| : (node = n.next()) {
+        if (n.type != .media or n.subtype != @intFromEnum(uefi.DevicePath.Media.Subtype.hard_drive)) continue;
+        if (n.length < @sizeOf(HardDrive)) return;
+        const hd: *align(1) const HardDrive = @ptrCast(n);
+        if (hd.signature_type != .guid_signature) return;
+        var text: [37]u16 = undefined;
+        partUUIDText(hd.partition_signature, &text);
+        const name = std.unicode.utf8ToUtf16LeStringLiteral("LoaderDevicePartUUID");
+        uefi.system_table.runtime_services.setVariable(name, &loader_interface_guid, .{ .bootservice_access = true, .runtime_access = true }, std.mem.sliceAsBytes(text[0..])) catch {};
+        return;
+    }
+}
+
 fn chainedByLoader() bool {
     const bs = uefi.system_table.boot_services orelse return false;
     const li = (bs.handleProtocol(uefi.protocol.LoadedImage, uefi.handle) catch return false) orelse return false;
@@ -650,6 +710,7 @@ pub fn main() void {
         puts("no ESP volume\r\n");
         while (true) {}
     };
+    exportBootPartition();
     renderSurface(root);
     if (slog.open(root, nvRead(ATOM_NV_SEALEDLOG) orelse 0)) dbg("sealed log: ring found\r\n") else dbg("sealed log: no ring\r\n");
 

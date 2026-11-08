@@ -8,7 +8,10 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"unicode/utf16"
 	"unsafe"
+
+	"github.com/mirkobrombin/atomloops/internal/sealedlog"
 )
 
 // Cmdline holds the kernel command line split into words.
@@ -139,6 +142,7 @@ type Partition struct {
 	Disk     string
 	PartName string
 	Label    string
+	PartUUID string
 }
 
 // Partitions lists the partitions of every disk, and whole disks that carry
@@ -161,6 +165,7 @@ func Partitions() []Partition {
 			}
 		}
 		p.PartName = ueventValue(name, "PARTNAME")
+		p.PartUUID = strings.ToLower(ueventValue(name, "PARTUUID"))
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Dev < out[j].Dev })
@@ -288,4 +293,52 @@ func FSType(dev string) string {
 		return "ext4"
 	}
 	return ""
+}
+
+const loaderVendorGUID = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+
+// LoaderPartUUID returns the GPT partition UUID the boot loader was started
+// from, as the loader exports it in LoaderDevicePartUUID, or "".
+func LoaderPartUUID() string {
+	_ = sealedlog.MountEFIVars()
+	b, err := os.ReadFile(filepath.Join(sealedlog.EFIVarDir, "LoaderDevicePartUUID-"+loaderVendorGUID))
+	if err != nil || len(b) < 6 {
+		return ""
+	}
+	var u []uint16
+	for i := 4; i+1 < len(b); i += 2 {
+		c := uint16(b[i]) | uint16(b[i+1])<<8
+		if c == 0 {
+			break
+		}
+		u = append(u, c)
+	}
+	return strings.ToLower(string(utf16.Decode(u)))
+}
+
+// BootDiskFirst moves the partitions of the disk that holds partUUID ahead of
+// the others, keeping the order inside each group.
+func BootDiskFirst(parts []Partition, partUUID string) []Partition {
+	disk := ""
+	for _, p := range parts {
+		if partUUID != "" && p.PartUUID == partUUID {
+			disk = p.Disk
+			break
+		}
+	}
+	if disk == "" {
+		return parts
+	}
+	out := make([]Partition, 0, len(parts))
+	for _, p := range parts {
+		if p.Disk == disk {
+			out = append(out, p)
+		}
+	}
+	for _, p := range parts {
+		if p.Disk != disk {
+			out = append(out, p)
+		}
+	}
+	return out
 }

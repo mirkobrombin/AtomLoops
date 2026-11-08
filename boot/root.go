@@ -72,6 +72,7 @@ type Ops struct {
 	MountISO     func(dev, dir string) bool
 	FSType       func(dev string) string
 	DiskOf       func(dev string) string
+	BootPartUUID func() string
 	Sleep        func(time.Duration)
 }
 
@@ -118,9 +119,10 @@ func SystemOps() Ops {
 			os.MkdirAll(dir, 0755)
 			return syscall.Mount(dev, dir, "iso9660", syscall.MS_RDONLY, "") == nil
 		},
-		FSType: FSType,
-		DiskOf: DiskOf,
-		Sleep:  time.Sleep,
+		FSType:       FSType,
+		DiskOf:       DiskOf,
+		BootPartUUID: LoaderPartUUID,
+		Sleep:        time.Sleep,
 	}
 }
 
@@ -138,6 +140,22 @@ type Media struct {
 	Unmountable []UnmountablePartition
 	// Empty lists data partitions that mounted but hold no root slot.
 	Empty []string
+	// BootWaits counts the scans that found no partition matching the one
+	// the loader started from.
+	BootWaits int
+}
+
+// bootDiskWaits bounds how many scans wait for the loader's own disk to
+// appear before any other disk may provide the data partition.
+const bootDiskWaits = 25
+
+func hasPartUUID(parts []Partition, id string) bool {
+	for _, p := range parts {
+		if p.PartUUID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // UnmountablePartition is a partition whose superblock names a data
@@ -148,14 +166,28 @@ type UnmountablePartition struct {
 }
 
 // FindData mounts the data partition read-only, the first partition that
-// holds a root slot under boot/rootfs, and attaches every slot file to a
+// holds a root slot under boot/rootfs, looking first on the disk the loader
+// started from, and attaches every slot file to a
 // read-only loop device.
 func (m *Media) FindData(cfg *Config, ops Ops) {
 	if m.DataDev != "" {
 		return
 	}
 	m.Unmountable, m.Empty = nil, nil
-	for _, p := range ops.Partitions() {
+	parts := ops.Partitions()
+	if ops.BootPartUUID != nil {
+		if id := ops.BootPartUUID(); id != "" {
+			if !hasPartUUID(parts, id) && m.BootWaits < bootDiskWaits {
+				if m.BootWaits == 0 {
+					Logf("waiting for loader partition %s", id)
+				}
+				m.BootWaits++
+				return
+			}
+			parts = BootDiskFirst(parts, id)
+		}
+	}
+	for _, p := range parts {
 		if strings.HasPrefix(filepath.Base(p.Dev), "sr") {
 			continue
 		}
