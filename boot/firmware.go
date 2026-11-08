@@ -1,9 +1,13 @@
 package boot
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,6 +40,7 @@ func MountFirmware(rootPubPath string) {
 		return
 	}
 	release := kernelRelease()
+	choice := loadChoice(NewRoot + FirmwareChoiceDir)
 	var firmware []*mountedBundle
 	overlays := map[string]*mountedBundle{}
 	for _, dir := range bundleDirs(fwroot) {
@@ -49,6 +54,11 @@ func MountFirmware(rootPubPath string) {
 			Logf("firmware bundle %s unverified, skipped", name)
 			continue
 		}
+		if choice.skip[name] == fw.VerityHash {
+			Logf("firmware bundle %s matches no device on this computer (remembered), skipped", name)
+			choice.keep[name] = fw.VerityHash
+			continue
+		}
 		b, err := mountBundle(name, img, hash, fw.VerityHash)
 		if err != nil {
 			Logf("firmware bundle %s %v, skipped", name, err)
@@ -56,6 +66,7 @@ func MountFirmware(rootPubPath string) {
 		}
 		if !pciWanted(b.mnt + "/.pci-vendors") {
 			Logf("firmware bundle %s matches no device here, skipped", name)
+			choice.keep[name] = fw.VerityHash
 			b.release()
 			continue
 		}
@@ -96,6 +107,75 @@ func MountFirmware(rootPubPath string) {
 		applyOverlay(b)
 	}
 	unionFirmware(firmware)
+	choice.save()
+}
+
+var FirmwareChoiceDir = "/var/lib/atomloops/firmware"
+
+type firmwareChoice struct {
+	path string
+	skip map[string]string
+	keep map[string]string
+}
+
+func machinePrint() string {
+	entries, _ := os.ReadDir(PCIDevices)
+	var ids []string
+	for _, e := range entries {
+		v, err1 := os.ReadFile(filepath.Join(PCIDevices, e.Name(), "vendor"))
+		d, err2 := os.ReadFile(filepath.Join(PCIDevices, e.Name(), "device"))
+		if err1 == nil && err2 == nil {
+			ids = append(ids, strings.ToLower(strings.TrimSpace(string(v))+":"+strings.TrimSpace(string(d))))
+		}
+	}
+	if len(ids) == 0 {
+		return ""
+	}
+	sort.Strings(ids)
+	sum := sha256.Sum256([]byte(strings.Join(ids, "\n")))
+	return hex.EncodeToString(sum[:8])
+}
+
+func loadChoice(dir string) *firmwareChoice {
+	c := &firmwareChoice{skip: map[string]string{}, keep: map[string]string{}}
+	id := machinePrint()
+	if id == "" {
+		return c
+	}
+	c.path = filepath.Join(dir, id)
+	data, err := os.ReadFile(c.path)
+	if err != nil {
+		return c
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 3 && f[0] == "skip" {
+			c.skip[f[1]] = f[2]
+		}
+	}
+	return c
+}
+
+func (c *firmwareChoice) save() {
+	if c.path == "" || maps.Equal(c.skip, c.keep) {
+		return
+	}
+	names := make([]string, 0, len(c.keep))
+	for n := range c.keep {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, n := range names {
+		b.WriteString("skip " + n + " " + c.keep[n] + "\n")
+	}
+	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil {
+		return
+	}
+	tmp := c.path + ".new"
+	if os.WriteFile(tmp, []byte(b.String()), 0o644) == nil && os.Rename(tmp, c.path) == nil {
+		Logf("firmware choice for this computer saved (%d bundles not needed)", len(names))
+	}
 }
 
 func bundleDirs(root string) []string {
