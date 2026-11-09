@@ -18,7 +18,22 @@ func TestManifestForAnotherArchIsRefused(t *testing.T) {
 	if _, err := ParseManifest([]byte(base + `,"arch":"` + Arch(runtime.GOARCH) + `"}`)); err != nil {
 		t.Fatalf("own manifest refused: %v", err)
 	}
-	if _, err := ParseManifest([]byte(base + `}`)); err != nil {
-		t.Fatalf("manifest without arch refused: %v", err)
+	if _, err := ParseManifestFor([]byte(base+`}`), "x86_64"); err != nil {
+		t.Fatalf("manifest without arch refused on x86_64: %v", err)
+	}
+	if _, err := ParseManifestFor([]byte(base+`}`), "aarch64"); err == nil {
+		t.Fatal("manifest without arch accepted as aarch64")
+	}
+	if _, err := ParseManifestFor([]byte(base+`,"arch":"aarch64"}`), "aarch64"); err != nil {
+		t.Fatalf("aarch64 manifest refused when asked for aarch64: %v", err)
+	}
+}
+
+func TestLoaderFileNamePerArch(t *testing.T) {
+	if LoaderFileName("aarch64") != "BOOTAA64.EFI" || LoaderFileName("x86_64") != "BOOTX64.EFI" {
+		t.Fatal("wrong removable boot path")
+	}
+	if !strings.HasSuffix(loaderBootPath(StageDirs{ESP: "/e/EFI/atom"}), LoaderFileName(Arch(runtime.GOARCH))) {
+		t.Fatal("loader path ignores the running arch")
 	}
 }

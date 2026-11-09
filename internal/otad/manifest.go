@@ -151,7 +151,20 @@ func Arch(goarch string) string {
 	return goarch
 }
 
+func manifestArch(a string) string {
+	if a == "" {
+		return "x86_64"
+	}
+	return a
+}
+
 func ParseManifest(b []byte) (Manifest, error) {
+	return ParseManifestFor(b, Arch(runtime.GOARCH))
+}
+
+// ParseManifestFor validates a manifest built for arch. A manifest without an arch
+// field predates per-arch feeds and is x86_64.
+func ParseManifestFor(b []byte, arch string) (Manifest, error) {
 	if !utf8.Valid(b) {
 		return Manifest{}, fmt.Errorf("manifest: invalid UTF-8")
 	}
@@ -166,8 +179,8 @@ func ParseManifest(b []byte) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("manifest: missing rootfs url/hash")
 	case m.KernelcacheURL == "" || m.KernelcacheHash == "":
 		return Manifest{}, fmt.Errorf("manifest: missing kernelcache url/hash")
-	case m.Arch != "" && m.Arch != Arch(runtime.GOARCH):
-		return Manifest{}, fmt.Errorf("manifest: built for %s, this computer is %s", m.Arch, Arch(runtime.GOARCH))
+	case manifestArch(m.Arch) != arch:
+		return Manifest{}, fmt.Errorf("manifest: built for %s, this computer is %s", manifestArch(m.Arch), arch)
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(b, &fields); err != nil {

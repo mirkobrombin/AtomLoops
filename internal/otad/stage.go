@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -303,6 +304,10 @@ type verifiedManifest struct {
 }
 
 func fetchVerifiedManifest(ctx context.Context, work, manifestURL, revocationURL string, rootPub []byte, expectedManifestSHA256 string) (*verifiedManifest, error) {
+	return fetchVerifiedManifestFor(ctx, work, manifestURL, revocationURL, rootPub, expectedManifestSHA256, Arch(runtime.GOARCH))
+}
+
+func fetchVerifiedManifestFor(ctx context.Context, work, manifestURL, revocationURL string, rootPub []byte, expectedManifestSHA256, arch string) (*verifiedManifest, error) {
 	fetch := func(url, name string) ([]byte, error) {
 		p := filepath.Join(work, name)
 		if _, err := FetchTo(ctx, url, p); err != nil {
@@ -361,7 +366,7 @@ func fetchVerifiedManifest(ctx context.Context, work, manifestURL, revocationURL
 			return nil, fmt.Errorf("stage: manifest changed since update check -- check again")
 		}
 	}
-	m, err := ParseManifest(mData)
+	m, err := ParseManifestFor(mData, arch)
 	if err != nil {
 		return nil, err
 	}

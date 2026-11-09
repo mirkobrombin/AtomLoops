@@ -150,10 +150,61 @@ func main() {
 			fmt.Fprintf(os.Stderr, "updated: serve: %v\n", err)
 			os.Exit(1)
 		}
+	case "fetch-release":
+		fs := flag.NewFlagSet("fetch-release", flag.ExitOnError)
+		arch := fs.String("arch", otad.Arch(runtime.GOARCH), "architecture of the release")
+		feed := fs.String("feed", "", "update feed base URL (default: the stable feed of --arch)")
+		out := fs.String("out", "", "directory the verified release is written to")
+		fs.Parse(os.Args[2:])
+		if *out == "" {
+			fmt.Fprintln(os.Stderr, "updated: fetch-release needs --out")
+			os.Exit(2)
+		}
+		if err := fetchRelease(*feed, *arch, *out, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "updated: fetch-release: %v\n", err)
+			os.Exit(1)
+		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: updated check|poll|serve ...")
+		fmt.Fprintln(os.Stderr, "usage: updated check|poll|serve|fetch-release ...")
 		os.Exit(2)
 	}
+}
+
+func goarchOf(arch string) string {
+	switch arch {
+	case "x86_64":
+		return "amd64"
+	case "aarch64":
+		return "arm64"
+	}
+	return arch
+}
+
+func fetchRelease(feed, arch, out string, w io.Writer) error {
+	if feed == "" {
+		feed = defaultFeed(goarchOf(arch))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+	last := -1
+	ctx = otad.WithProgress(ctx, func(done, total int64) {
+		if total <= 0 {
+			return
+		}
+		if pct := int(done * 100 / total); pct != last {
+			last = pct
+			fmt.Fprintf(w, "progress %d\n", pct)
+		}
+	})
+	m, err := otad.FetchRelease(ctx, feed, arch, rootPub, out, func(i, n int, name string) {
+		last = -1
+		fmt.Fprintf(w, "file %d %d %s\n", i+1, n, name)
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "release %s %s\n", m.Version, arch)
+	return nil
 }
 
 func fetchBytes(url string) ([]byte, error) {

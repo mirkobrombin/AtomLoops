@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,7 +37,15 @@ type LoaderStatus struct {
 }
 
 func loaderBootPath(dirs StageDirs) string {
-	return filepath.Join(filepath.Dir(dirs.ESP), "BOOT", "BOOTX64.EFI")
+	return filepath.Join(filepath.Dir(dirs.ESP), "BOOT", LoaderFileName(Arch(runtime.GOARCH)))
+}
+
+// LoaderFileName is the removable-media boot path firmware looks for on arch.
+func LoaderFileName(arch string) string {
+	if arch == "aarch64" {
+		return "BOOTAA64.EFI"
+	}
+	return "BOOTX64.EFI"
 }
 
 func LoaderVersionOf(image []byte) int {
