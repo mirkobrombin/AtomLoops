@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -25,6 +26,7 @@ import (
 type Manifest struct {
 	Version        string `json:"version"`
 	MinVersion     string `json:"min_version"`
+	Arch           string `json:"arch,omitempty"`
 	ProductName    string `json:"product_name,omitempty"`
 	ProductVersion string `json:"product_version,omitempty"`
 	ProductBuild   string `json:"product_build,omitempty"`
@@ -139,6 +141,16 @@ func (m Manifest) HasFirmware() bool { return len(m.FirmwareBundleList()) > 0 }
 // ParseManifest decodes and validates a manifest. A manifest missing a version
 // or any artifact reference is rejected, so staging never runs on a half-formed
 // update description.
+func Arch(goarch string) string {
+	switch goarch {
+	case "amd64":
+		return "x86_64"
+	case "arm64":
+		return "aarch64"
+	}
+	return goarch
+}
+
 func ParseManifest(b []byte) (Manifest, error) {
 	if !utf8.Valid(b) {
 		return Manifest{}, fmt.Errorf("manifest: invalid UTF-8")
@@ -154,6 +166,8 @@ func ParseManifest(b []byte) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("manifest: missing rootfs url/hash")
 	case m.KernelcacheURL == "" || m.KernelcacheHash == "":
 		return Manifest{}, fmt.Errorf("manifest: missing kernelcache url/hash")
+	case m.Arch != "" && m.Arch != Arch(runtime.GOARCH):
+		return Manifest{}, fmt.Errorf("manifest: built for %s, this computer is %s", m.Arch, Arch(runtime.GOARCH))
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(b, &fields); err != nil {

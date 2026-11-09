@@ -121,6 +121,7 @@ type FirmwareSpec struct {
 type ReleaseSpec struct {
 	Version, MinVersion                       string
 	ProductName, ProductVersion, ProductBuild string
+	Arch                                      string
 
 	RootFSFile, RootFSURL string
 	// RootFSVerityHash is the dm-verity ROOT hash of RootFSFile, the same value baked
@@ -172,6 +173,7 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 	m := otad.Manifest{
 		Version:            r.Version,
 		MinVersion:         r.MinVersion,
+		Arch:               r.Arch,
 		ProductName:        r.ProductName,
 		ProductVersion:     r.ProductVersion,
 		ProductBuild:       r.ProductBuild,

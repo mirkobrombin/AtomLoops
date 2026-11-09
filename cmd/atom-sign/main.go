@@ -168,6 +168,7 @@ func run(args []string) int {
 		productName := fs.String("product-name", "", "optional public product name")
 		productVersion := fs.String("product-version", "", "optional public product version")
 		productBuild := fs.String("product-build", "", "optional public product build")
+		arch := fs.String("arch", "", "architecture the release runs on (x86_64, aarch64); empty for any")
 		rootfs := fs.String("rootfs", "", "rootfs artifact file")
 		rootfsURL := fs.String("rootfs-url", "", "URL the device will fetch the rootfs from")
 		kc := fs.String("kernelcache", "", "kernelcache artifact file")
@@ -228,7 +229,7 @@ func run(args []string) int {
 			}}
 		}
 		p, err := signing.BuildManifest(*out, signing.ReleaseSpec{
-			Version: *version, MinVersion: *minVersion,
+			Version: *version, MinVersion: *minVersion, Arch: *arch,
 			ProductName: *productName, ProductVersion: *productVersion, ProductBuild: *productBuild,
 			RootFSFile: *rootfs, RootFSURL: *rootfsURL,
 			RootFSVerityHash:   *rootfsVerity,

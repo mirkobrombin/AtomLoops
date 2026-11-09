@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,6 +84,13 @@ func clientStatus(status Status) Status {
 	return status
 }
 
+func defaultFeed(goarch string) string {
+	if otad.Arch(goarch) == "x86_64" {
+		return "https://updates.sinty.dev/stable"
+	}
+	return "https://updates.sinty.dev/stable/" + otad.Arch(goarch)
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: updated check|poll|serve ...")
@@ -91,7 +99,7 @@ func main() {
 	switch os.Args[1] {
 	case "check":
 		fs := flag.NewFlagSet("check", flag.ExitOnError)
-		feed := fs.String("feed", "https://updates.sinty.dev/stable", "update feed base URL")
+		feed := fs.String("feed", defaultFeed(runtime.GOARCH), "update feed base URL")
 		cur := fs.String("current", "", "installed version (default: read deployment)")
 		wal := fs.String("wal", defaultWAL, "deployment WAL path")
 		fs.Parse(os.Args[2:])
@@ -103,7 +111,7 @@ func main() {
 		}
 	case "poll":
 		fs := flag.NewFlagSet("poll", flag.ExitOnError)
-		feed := fs.String("feed", "https://updates.sinty.dev/stable", "update feed base URL")
+		feed := fs.String("feed", defaultFeed(runtime.GOARCH), "update feed base URL")
 		cur := fs.String("current", "", "installed version (default: read deployment)")
 		state := fs.String("state", "/run/updated/status.json", "status file the UI reads")
 		fs.Bool("no-fetch", false, "deprecated; polling never downloads")
@@ -126,7 +134,7 @@ func main() {
 		}
 	case "serve":
 		fs := flag.NewFlagSet("serve", flag.ExitOnError)
-		feed := fs.String("feed", "https://updates.sinty.dev/stable", "update feed base URL")
+		feed := fs.String("feed", defaultFeed(runtime.GOARCH), "update feed base URL")
 		sock := fs.String("socket", "/run/updated.sock", "unix socket for the UI")
 		cur := fs.String("current", "", "installed version (default: read deployment)")
 		state := fs.String("state", "/run/updated/status.json", "status file written by `updated poll`")
