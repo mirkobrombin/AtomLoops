@@ -256,19 +256,26 @@ fn seedRandom() void {
     @memcpy(mix[0..32], &rng_state);
     @memcpy(mix[32..64], &prev_hash);
     std.mem.writeInt(u64, mix[64..72], unixMs(), .little);
-    std.mem.writeInt(u64, mix[72..80], rdtsc(), .little);
+    std.mem.writeInt(u64, mix[72..80], ticks(), .little);
     std.crypto.hash.sha2.Sha256.hash(&mix, &rng_state, .{});
 }
 
-fn rdtsc() u64 {
-    if (@import("builtin").cpu.arch != .x86_64) return 0;
-    var lo: u32 = undefined;
-    var hi: u32 = undefined;
-    asm volatile ("rdtsc"
-        : [lo] "={eax}" (lo),
-          [hi] "={edx}" (hi),
-    );
-    return @as(u64, hi) << 32 | lo;
+fn ticks() u64 {
+    switch (@import("builtin").cpu.arch) {
+        .x86_64 => {
+            var lo: u32 = undefined;
+            var hi: u32 = undefined;
+            asm volatile ("rdtsc"
+                : [lo] "={eax}" (lo),
+                  [hi] "={edx}" (hi),
+            );
+            return @as(u64, hi) << 32 | lo;
+        },
+        .aarch64 => return asm volatile ("mrs %[v], cntvct_el0"
+            : [v] "=r" (-> u64),
+        ),
+        else => return 0,
+    }
 }
 
 fn randomBytes(out: []u8) void {
@@ -277,7 +284,7 @@ fn randomBytes(out: []u8) void {
     var ctr: u64 = 0;
     while (off < out.len) : (ctr += 1) {
         @memcpy(block[0..32], &rng_state);
-        std.mem.writeInt(u64, block[32..40], ctr ^ rdtsc(), .little);
+        std.mem.writeInt(u64, block[32..40], ctr ^ ticks(), .little);
         var h: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(&block, &h, .{});
         const n = @min(32, out.len - off);
