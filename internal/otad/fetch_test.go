@@ -1,6 +1,7 @@
 package otad
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -9,9 +10,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestFetchToHappyPath(t *testing.T) {
@@ -126,5 +130,113 @@ func TestVerifyManifestSig(t *testing.T) {
 	}
 	if VerifyManifestSig(data, sig, pub[:16]) {
 		t.Error("short pubkey accepted")
+	}
+}
+
+func fastRetries(t *testing.T) {
+	oldDelay, oldStall := retryDelay, stallTimeout
+	retryDelay, stallTimeout = time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() { retryDelay, stallTimeout = oldDelay, oldStall })
+}
+
+func TestFetchToRetriesServerErrors(t *testing.T) {
+	fastRetries(t)
+	var attempts int32
+	body := []byte("rootfs after a bad gateway")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) <= 2 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Write(body)
+	}))
+	defer srv.Close()
+	dest := filepath.Join(t.TempDir(), "rootfs.erofs")
+	if _, err := FetchTo(context.Background(), srv.URL, dest); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(dest); string(got) != string(body) {
+		t.Fatalf("fetched %q", got)
+	}
+}
+
+func TestFetchToGivesUpOnNotFound(t *testing.T) {
+	fastRetries(t)
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	if _, err := FetchTo(context.Background(), srv.URL, filepath.Join(t.TempDir(), "x")); err == nil {
+		t.Fatal("404 accepted")
+	}
+	if attempts != 1 {
+		t.Fatalf("404 retried %d times", attempts)
+	}
+}
+
+func TestFetchToResumesCutDownload(t *testing.T) {
+	fastRetries(t)
+	body := make([]byte, 256*1024)
+	rand.Read(body)
+	var ranges []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		ranges = append(ranges, r.Header.Get("Range"))
+		first := len(ranges) == 1
+		mu.Unlock()
+		if first {
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.Write(body[:100000])
+			w.(http.Flusher).Flush()
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			conn.Close()
+			return
+		}
+		http.ServeContent(w, r, "rootfs.erofs", time.Time{}, bytes.NewReader(body))
+	}))
+	defer srv.Close()
+	var last int64
+	ctx := WithProgress(context.Background(), func(done, total int64) { last = done })
+	dest := filepath.Join(t.TempDir(), "rootfs.erofs")
+	n, err := FetchTo(ctx, srv.URL, dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(dest)
+	if n != int64(len(body)) || !bytes.Equal(got, body) || last != int64(len(body)) {
+		t.Fatalf("n=%d progress=%d equal=%v", n, last, bytes.Equal(got, body))
+	}
+	if len(ranges) != 2 || ranges[1] != "bytes=100000-" {
+		t.Fatalf("ranges %q", ranges)
+	}
+}
+
+func TestFetchToAbandonsStalledDownload(t *testing.T) {
+	fastRetries(t)
+	fetchAttemptsOld := fetchAttempts
+	fetchAttempts = 2
+	defer func() { fetchAttempts = fetchAttemptsOld }()
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "10")
+		w.Write([]byte("abc"))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	start := time.Now()
+	_, err := FetchTo(context.Background(), srv.URL, filepath.Join(t.TempDir(), "x"))
+	if err == nil {
+		t.Fatal("stalled download accepted")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("stall detected after %v", time.Since(start))
 	}
 }
