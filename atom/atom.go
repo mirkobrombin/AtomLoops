@@ -25,6 +25,19 @@ func Stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	return otad.Stage(ctx, walPath, manifestURL, revocationURL, rootPub, dirs)
 }
 
+// StageFrom stages the release kept in dir, written by ExportRelease or a
+// release download, with the same checks as Stage. foreign marks slots of a
+// system other than the running one, such as a computer rescued from a Key.
+func StageFrom(ctx context.Context, walPath, dir string, rootPub []byte, dirs StageDirs, foreign bool) (string, error) {
+	return otad.StageFrom(ctx, walPath, dir, rootPub, dirs, foreign)
+}
+
+// ExportRelease writes a release of the version the slots of dirs run into out.
+func ExportRelease(walPath string, dirs StageDirs, rootPub []byte, out string) (string, error) {
+	m, err := otad.ExportRelease(walPath, dirs, rootPub, out)
+	return m.Version, err
+}
+
 // Rollback returns to last_known_good with no network (its artifacts are already
 // present) -- the guaranteed-safe recovery floor.
 func Rollback(walPath string, dirs StageDirs) (string, error) {
