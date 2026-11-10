@@ -22,6 +22,8 @@ const fileScheme = "file://"
 
 type localDirKey struct{}
 
+type foreignKey struct{}
+
 var anchorFiles = []string{"manifest.json", "manifest.json.sig", "signing-cert.json", "signing-cert.json.sig"}
 
 func copyLocal(ctx context.Context, src, tmp string) (int64, error) {
@@ -88,12 +90,15 @@ func localize(m Manifest, dir string) Manifest {
 // StageFrom stages the release kept in dir, as written by ExportRelease or
 // FetchRelease, exactly like an update from the feed: the same signature chain,
 // hashes, architecture and anti-rollback checks, into the slots of dirs.
-func StageFrom(ctx context.Context, walPath, dir string, rootPub []byte, dirs StageDirs) (string, error) {
+// A foreign target is another system's slots, such as a mounted Key: what this
+// computer booted and which GPU it has say nothing about it.
+func StageFrom(ctx context.Context, walPath, dir string, rootPub []byte, dirs StageDirs, foreign bool) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", err
 	}
 	ctx = context.WithValue(ctx, localDirKey{}, abs)
+	ctx = context.WithValue(ctx, foreignKey{}, foreign)
 	return stage(ctx, walPath, fileScheme+filepath.Join(abs, "manifest.json"), "", rootPub, dirs, "")
 }
 

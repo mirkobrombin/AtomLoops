@@ -54,7 +54,7 @@ func TestExportAndStageFrom(t *testing.T) {
 
 	other := e2eWAL(t)
 	odirs := StageDirs{Rootfs: filepath.Join(t.TempDir(), "rootfs"), ESP: filepath.Join(t.TempDir(), "esp")}
-	if _, err := StageFrom(context.Background(), other, out, rootPub, odirs); err != nil {
+	if _, err := StageFrom(context.Background(), other, out, rootPub, odirs, true); err != nil {
 		t.Fatalf("StageFrom: %v", err)
 	}
 	d, _ := deployment.Load(other)
@@ -96,7 +96,7 @@ func TestStageFromRefusesTampering(t *testing.T) {
 	stageInto := func() error {
 		w := e2eWAL(t)
 		return func() error {
-			_, err := StageFrom(context.Background(), w, out, rootPub, StageDirs{Rootfs: filepath.Join(t.TempDir(), "r"), ESP: filepath.Join(t.TempDir(), "e")})
+			_, err := StageFrom(context.Background(), w, out, rootPub, StageDirs{Rootfs: filepath.Join(t.TempDir(), "r"), ESP: filepath.Join(t.TempDir(), "e")}, false)
 			return err
 		}()
 	}
@@ -118,10 +118,45 @@ func TestStageFromRefusesTampering(t *testing.T) {
 
 	newer := filepath.Join(t.TempDir(), "deployment.json")
 	deployment.New("dev-2", "v3").Save(newer)
-	if _, err := StageFrom(context.Background(), newer, out, rootPub, StageDirs{Rootfs: filepath.Join(t.TempDir(), "r"), ESP: filepath.Join(t.TempDir(), "e")}); err == nil || !strings.Contains(err.Error(), "anti-rollback") {
+	if _, err := StageFrom(context.Background(), newer, out, rootPub, StageDirs{Rootfs: filepath.Join(t.TempDir(), "r"), ESP: filepath.Join(t.TempDir(), "e")}, false); err == nil || !strings.Contains(err.Error(), "anti-rollback") {
 		t.Fatalf("downgrade staged: %v", err)
 	}
 	if err := stageInto(); err != nil {
 		t.Fatalf("restored release refused: %v", err)
+	}
+}
+
+func TestStageFromTargetIgnoresThisBoot(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh")
+	}
+	wal, dirs, rootPub := promotedMachine(t)
+	out := filepath.Join(t.TempDir(), "release")
+	if _, err := ExportRelease(wal, dirs, rootPub, out); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join(t.TempDir(), "deployment.json")
+	d := deployment.New("key-1", "v1")
+	d.Deploy("v2")
+	d.RootFS.PendingHash = "verity-v2"
+	d.Kernelcache.StableBoots = 1
+	d.Save(key)
+	bootedAs(t, "v2", "verity-v2")
+	kdirs := StageDirs{Rootfs: filepath.Join(t.TempDir(), "r"), ESP: filepath.Join(t.TempDir(), "e")}
+	os.MkdirAll(kdirs.Rootfs, 0o755)
+	os.MkdirAll(kdirs.ESP, 0o755)
+	for _, slot := range []string{"active", "next"} {
+		os.WriteFile(filepath.Join(kdirs.Rootfs, "rootfs-"+slot+".erofs"), []byte(slot), 0o644)
+		os.WriteFile(filepath.Join(kdirs.Rootfs, "rootfs-"+slot+".hash"), []byte(slot), 0o644)
+		os.WriteFile(filepath.Join(kdirs.ESP, "kernelcache-"+slot+".efi"), []byte(slot), 0o644)
+		os.WriteFile(filepath.Join(kdirs.ESP, "kernelcache-"+slot+".efi.sig"), []byte(slot), 0o644)
+	}
+	if _, err := StageFrom(context.Background(), key, out, rootPub, kdirs, true); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := deployment.Load(key)
+	active, _ := os.ReadFile(filepath.Join(kdirs.Rootfs, "rootfs-active.erofs"))
+	if got.RootFS.Pending != "v2" || string(active) != "active" {
+		t.Fatalf("the Key's candidate was taken as booted: %+v active=%q", got.RootFS, active)
 	}
 }

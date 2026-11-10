@@ -199,12 +199,13 @@ func main() {
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
 		firmwareDir := fs.String("firmware-dir", "", "firmware add-on track staging dir")
 		stageLock := fs.String("stage-lock", "/run/updated-stage.lock", "cross-process update staging lock")
+		target := fs.Bool("target", false, "the slots belong to another system, such as a mounted Key")
 		fs.Parse(os.Args[2:])
 		if *from == "" {
 			fmt.Fprintln(os.Stderr, "updated: stage-from needs --from")
 			os.Exit(2)
 		}
-		msg, err := stageFrom(*from, *wal, *stageLock, otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir, Firmware: *firmwareDir}, os.Stdout)
+		msg, err := stageFrom(*from, *wal, *stageLock, otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir, Firmware: *firmwareDir}, *target, os.Stdout)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "updated: stage-from: %v\n", err)
 			os.Exit(1)
@@ -216,7 +217,7 @@ func main() {
 	}
 }
 
-func stageFrom(from, wal, stageLock string, dirs otad.StageDirs, w io.Writer) (string, error) {
+func stageFrom(from, wal, stageLock string, dirs otad.StageDirs, target bool, w io.Writer) (string, error) {
 	lock, err := acquireStageLock(stageLock)
 	if err != nil {
 		return "", err
@@ -234,7 +235,7 @@ func stageFrom(from, wal, stageLock string, dirs otad.StageDirs, w io.Writer) (s
 			fmt.Fprintf(w, "progress %d\n", pct)
 		}
 	})
-	return otad.StageFrom(ctx, wal, from, rootPub, dirs)
+	return otad.StageFrom(ctx, wal, from, rootPub, dirs, target)
 }
 
 func goarchOf(arch string) string {

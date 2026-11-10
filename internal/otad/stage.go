@@ -70,8 +70,11 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	// levels (L4/L5) the monotonic counter enforces this at boot; here we refuse
 	// to even stage a downgrade, so a rolled-back signing key cannot push an old,
 	// vulnerable image.
-	if _, err := promoteRunningCandidate(walPath, dirs); err != nil {
-		return "", fmt.Errorf("stage: promote the running candidate: %w", err)
+	foreign, _ := ctx.Value(foreignKey{}).(bool)
+	if !foreign {
+		if _, err := promoteRunningCandidate(walPath, dirs); err != nil {
+			return "", fmt.Errorf("stage: promote the running candidate: %w", err)
+		}
 	}
 	cur, err := deployment.Load(walPath)
 	if err != nil {
@@ -84,8 +87,10 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	// Atomic kernel<->driver coupling: refuse a kernel-changing update that would
 	// leave a detected GPU without its matching kernel-bound driver bundle, so we
 	// never boot a new kernel with a dead proprietary driver.
-	if err := m.CoupledKernelCheck(DetectGPUChips("")); err != nil {
-		return "", fmt.Errorf("stage: %w", err)
+	if !foreign {
+		if err := m.CoupledKernelCheck(DetectGPUChips("")); err != nil {
+			return "", fmt.Errorf("stage: %w", err)
+		}
 	}
 
 	// 2. rootfs -> /boot/rootfs/rootfs-next.erofs, verified.
