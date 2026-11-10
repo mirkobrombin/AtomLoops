@@ -164,10 +164,77 @@ func main() {
 			fmt.Fprintf(os.Stderr, "updated: fetch-release: %v\n", err)
 			os.Exit(1)
 		}
+	case "version":
+		fs := flag.NewFlagSet("version", flag.ExitOnError)
+		wal := fs.String("wal", defaultWAL, "deployment WAL path")
+		fs.Parse(os.Args[2:])
+		v, err := otad.InstalledVersion(*wal)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "updated: version: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(v)
+	case "export-release":
+		fs := flag.NewFlagSet("export-release", flag.ExitOnError)
+		out := fs.String("out", "", "directory the release is written to")
+		wal := fs.String("wal", defaultWAL, "deployment WAL path")
+		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot dir")
+		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache slot dir")
+		fs.Parse(os.Args[2:])
+		if *out == "" {
+			fmt.Fprintln(os.Stderr, "updated: export-release needs --out")
+			os.Exit(2)
+		}
+		m, err := otad.ExportRelease(*wal, otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir}, rootPub, *out)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "updated: export-release: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("release %s %s\n", m.Version, otad.ManifestArch(m.Arch))
+	case "stage-from":
+		fs := flag.NewFlagSet("stage-from", flag.ExitOnError)
+		from := fs.String("from", "", "release directory written by export-release or fetch-release")
+		wal := fs.String("wal", defaultWAL, "deployment WAL path")
+		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot staging dir")
+		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
+		firmwareDir := fs.String("firmware-dir", "", "firmware add-on track staging dir")
+		stageLock := fs.String("stage-lock", "/run/updated-stage.lock", "cross-process update staging lock")
+		fs.Parse(os.Args[2:])
+		if *from == "" {
+			fmt.Fprintln(os.Stderr, "updated: stage-from needs --from")
+			os.Exit(2)
+		}
+		msg, err := stageFrom(*from, *wal, *stageLock, otad.StageDirs{Rootfs: *rootfsDir, ESP: *espDir, Firmware: *firmwareDir}, os.Stdout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "updated: stage-from: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(msg)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: updated check|poll|serve|fetch-release ...")
+		fmt.Fprintln(os.Stderr, "usage: updated check|poll|serve|fetch-release|version|export-release|stage-from ...")
 		os.Exit(2)
 	}
+}
+
+func stageFrom(from, wal, stageLock string, dirs otad.StageDirs, w io.Writer) (string, error) {
+	lock, err := acquireStageLock(stageLock)
+	if err != nil {
+		return "", err
+	}
+	defer releaseStageLock(lock)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+	last := -1
+	ctx = otad.WithProgress(ctx, func(done, total int64) {
+		if total <= 0 {
+			return
+		}
+		if pct := int(done * 100 / total); pct != last {
+			last = pct
+			fmt.Fprintf(w, "progress %d\n", pct)
+		}
+	})
+	return otad.StageFrom(ctx, wal, from, rootPub, dirs)
 }
 
 func goarchOf(arch string) string {

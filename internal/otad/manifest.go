@@ -151,6 +151,9 @@ func Arch(goarch string) string {
 	return goarch
 }
 
+// ManifestArch is the architecture a manifest's arch field names.
+func ManifestArch(a string) string { return manifestArch(a) }
+
 func manifestArch(a string) string {
 	if a == "" {
 		return "x86_64"

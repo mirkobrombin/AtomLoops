@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mirkobrombin/go-foundation/pkg/httpx"
@@ -64,6 +65,17 @@ func (p *progressReader) Read(b []byte) (int, error) {
 func FetchTo(ctx context.Context, url, dest string) (int64, error) {
 	tmp := dest + ".tmp"
 	os.Remove(tmp)
+	if path, ok := strings.CutPrefix(url, fileScheme); ok {
+		n, err := copyLocal(ctx, path, tmp)
+		if err != nil {
+			return 0, err
+		}
+		if err := os.Rename(tmp, dest); err != nil {
+			os.Remove(tmp)
+			return 0, err
+		}
+		return n, syncDir(filepath.Dir(dest))
+	}
 	var last error
 	for attempt := 0; attempt < fetchAttempts; attempt++ {
 		if attempt > 0 {

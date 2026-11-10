@@ -61,6 +61,9 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 		return "", err
 	}
 	m, mData, mSig, certData, certSig := vm.manifest, vm.data, vm.sig, vm.cert, vm.certSig
+	if dir, ok := ctx.Value(localDirKey{}).(string); ok {
+		m = localize(m, dir)
+	}
 
 	// Software anti-rollback (A4.2, level L1): refuse to stage a manifest whose
 	// version is a downgrade below the currently installed one. At the hardware
@@ -235,6 +238,9 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	}
 	if err := d.Save(walPath); err != nil {
 		return "", err
+	}
+	if err := saveAnchor(dirs.Rootfs, m.Version, []string{cur.RootFS.Current}, mData, mSig, certData, certSig); err != nil {
+		return "", fmt.Errorf("staged %s but keeping its signed manifest failed: %w", m.Version, err)
 	}
 	for _, dir := range []string{dirs.Rootfs, dirs.Firmware, filepath.Dir(walPath), dirs.ESP} {
 		if dir == "" {
