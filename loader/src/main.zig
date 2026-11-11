@@ -5,6 +5,7 @@ const uefi = std.os.uefi;
 const File = uefi.protocol.File;
 const cc = uefi.cc;
 const slog = @import("sealedlog.zig");
+const board = @import("board.zig");
 
 // Root public key, embedded from src/root.pub (32 raw bytes), same key the daemon
 // uses. The committed file is a dev placeholder; the deployment build injects its
@@ -551,7 +552,17 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
     var pbuf: [96]u16 = undefined;
     const idx = slotIndex(slot);
     slog.record(slog.ev_slot_chosen, &.{idx});
-    const img = readFile(root, atomPath(&pbuf, slot, "")) orelse {
+    var nbuf: [64]u8 = undefined;
+    var name = slot;
+    if (board.family()) |fam| {
+        if (board.variant(&nbuf, slot, fam)) |v| {
+            if (root.open(atomPath(&pbuf, v, ""), .read, .{})) |f| {
+                _ = f.close() catch {};
+                name = v;
+            } else |_| {}
+        }
+    }
+    const img = readFile(root, atomPath(&pbuf, name, "")) orelse {
         slog.record(slog.ev_slot_missing, &.{ idx, 0 });
         puts("slot image missing\r\n");
         return failed("the system kernel is missing");
@@ -559,7 +570,7 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
     defer uefi.pool_allocator.free(img);
 
     var sbuf: [96]u16 = undefined;
-    const sig = readFile(root, atomPath(&sbuf, slot, ".sig")) orelse {
+    const sig = readFile(root, atomPath(&sbuf, name, ".sig")) orelse {
         slog.record(slog.ev_slot_missing, &.{ idx, 1 });
         puts("slot signature missing -- refusing\r\n");
         return failed("the system kernel signature is missing");

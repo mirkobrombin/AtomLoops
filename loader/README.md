@@ -20,6 +20,17 @@ for the rest of the native bits (boot-splash, preload shims, utilities) too.
 - [x] Phase 3-4: LoadImage/StartImage chainload from the ESP (QEMU-verified via stage2)
 - [ ] Phase 5: TPM PCR measurement; hidden in-surface image chooser
 
+## Kernel families
+
+On aarch64 the loader reads the root `compatible` of the device tree the
+firmware hands over. A board whose family has its own kernels boots
+`kernelcache-<slot>.<family>.efi` (signed like every slot) when that file is
+on the ESP, and the mainline `kernelcache-<slot>.efi` otherwise.
+
+| compatible | family |
+|---|---|
+| `nvidia,tegra234` | `l4t` |
+
 ## Build
     ./build.sh        # needs zig 0.16.0 on PATH (or ZIG=/path/to/zig)
 
