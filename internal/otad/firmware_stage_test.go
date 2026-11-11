@@ -63,6 +63,10 @@ func TestStageFirmwareTrack(t *testing.T) {
 }
 
 func firmwareStageServer(t *testing.T) (string, ed25519.PublicKey, Manifest) {
+	return firmwareStageServerWith(t, nil)
+}
+
+func firmwareStageServerWith(t *testing.T, edit func(*Manifest)) (string, ed25519.PublicKey, Manifest) {
 	rootfs := []byte("EROFS rootfs image v2 contents")
 	kernel := []byte("UKI kernelcache v2 contents")
 	firmware := []byte("signed firmware add-on image v5 contents")
@@ -110,6 +114,9 @@ func firmwareStageServer(t *testing.T) (string, ed25519.PublicKey, Manifest) {
 		FirmwareHashTreeHash: sha256hex(firmwareHashTree),
 		FirmwareVersion:      5,
 		FirmwareMinVersion:   0,
+	}
+	if edit != nil {
+		edit(&m)
 	}
 	mData, _ := json.Marshal(m)
 	mSig := ed25519.Sign(signPriv, mData)

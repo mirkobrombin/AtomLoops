@@ -112,6 +112,7 @@ type FirmwareBundleSpec struct {
 	Chips        []string `json:"chips,omitempty"`
 	KernelMin    string   `json:"kernel_min,omitempty"`
 	KernelMax    string   `json:"kernel_max,omitempty"`
+	OptIn        bool     `json:"opt_in,omitempty"`
 	// CriticalDevices lists device-presence checks the early device-probe must pass for
 	// this bundle to count as bound (e.g. "net:wlan0", "drm:/dev/dri/card0"). Empty means
 	// the bundle is non-critical: a clean overlay mount with no firmware-load failure is

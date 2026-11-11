@@ -189,46 +189,18 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	if err != nil {
 		return "", err
 	}
+	opted := OptedIn(OptInPath)
 	staged := make([]FirmwareBundleSpec, 0, len(bundles))
 	for _, fw := range bundles {
-		if !fw.MatchesHardware(chips, kernel) {
+		if !fw.Wanted(opted) || !fw.MatchesHardware(chips, kernel) {
 			continue
 		}
 		if b, ok := installed.Firmware.Bundles[fw.Name]; ok && fw.Version <= b.MinVersion {
 			continue
 		}
 		staged = append(staged, fw)
-		bdir := filepath.Join(dirs.Firmware, fw.Name)
-		if err := os.MkdirAll(bdir, 0o755); err != nil {
+		if err := stageBundle(ctx, dirs, fw, mData, mSig, certData, certSig); err != nil {
 			return "", err
-		}
-		imgPath := filepath.Join(bdir, "firmware-next.img")
-		if _, err := FetchTo(ctx, fw.URL, imgPath); err != nil {
-			return "", err
-		}
-		if err := VerifySHA256(imgPath, fw.Hash); err != nil {
-			os.Remove(imgPath)
-			return "", err
-		}
-		// The dm-verity hash tree sidecar the initramfs feeds to veritysetup.
-		if fw.VerityHash != "" {
-			htPath := filepath.Join(bdir, "firmware-next.hash")
-			if _, err := FetchTo(ctx, fw.HashTreeURL, htPath); err != nil {
-				os.Remove(imgPath)
-				return "", err
-			}
-			if err := VerifySHA256(htPath, fw.HashTreeHash); err != nil {
-				os.Remove(imgPath)
-				os.Remove(htPath)
-				return "", err
-			}
-		}
-		// Per-bundle copy of the boot trust anchor (the release-signed manifest chain
-		// the initramfs re-verifies offline for this bundle's verity hash), so each
-		// bundle can roll back independently to its own previous anchor.
-		if err := WriteFirmwareAnchor(bdir, "next", mData, mSig, certData, certSig); err != nil {
-			os.Remove(imgPath)
-			return "", fmt.Errorf("stage: persist firmware anchor for %q: %w", fw.Name, err)
 		}
 	}
 
@@ -387,4 +359,40 @@ func fetchVerifiedManifestFor(ctx context.Context, work, manifestURL, revocation
 		return nil, err
 	}
 	return &verifiedManifest{manifest: m, data: mData, sig: mSig, cert: certData, certSig: certSig}, nil
+}
+
+func stageBundle(ctx context.Context, dirs StageDirs, fw FirmwareBundleSpec, mData, mSig, certData, certSig []byte) error {
+	bdir := filepath.Join(dirs.Firmware, fw.Name)
+	if err := os.MkdirAll(bdir, 0o755); err != nil {
+		return err
+	}
+	imgPath := filepath.Join(bdir, "firmware-next.img")
+	if _, err := FetchTo(ctx, fw.URL, imgPath); err != nil {
+		return err
+	}
+	if err := VerifySHA256(imgPath, fw.Hash); err != nil {
+		os.Remove(imgPath)
+		return err
+	}
+	// The dm-verity hash tree sidecar the initramfs feeds to veritysetup.
+	if fw.VerityHash != "" {
+		htPath := filepath.Join(bdir, "firmware-next.hash")
+		if _, err := FetchTo(ctx, fw.HashTreeURL, htPath); err != nil {
+			os.Remove(imgPath)
+			return err
+		}
+		if err := VerifySHA256(htPath, fw.HashTreeHash); err != nil {
+			os.Remove(imgPath)
+			os.Remove(htPath)
+			return err
+		}
+	}
+	// Per-bundle copy of the boot trust anchor (the release-signed manifest chain
+	// the initramfs re-verifies offline for this bundle's verity hash), so each
+	// bundle can roll back independently to its own previous anchor.
+	if err := WriteFirmwareAnchor(bdir, "next", mData, mSig, certData, certSig); err != nil {
+		os.Remove(imgPath)
+		return fmt.Errorf("stage: persist firmware anchor for %q: %w", fw.Name, err)
+	}
+	return nil
 }

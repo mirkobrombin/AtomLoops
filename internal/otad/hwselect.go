@@ -167,10 +167,11 @@ func (m Manifest) CoupledKernelCheck(chips []string) error {
 		return nil
 	}
 	bundles := m.FirmwareBundleList()
+	opted := OptedIn(OptInPath)
 	for _, chip := range chips {
 		offers, matches := false, false
 		for _, b := range bundles {
-			if !b.isKernelBoundFor(chip) {
+			if !b.Wanted(opted) || !b.isKernelBoundFor(chip) {
 				continue
 			}
 			offers = true
