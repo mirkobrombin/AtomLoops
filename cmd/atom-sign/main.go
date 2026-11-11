@@ -69,6 +69,12 @@ func (b *bundleList) Set(v string) error {
 			fw.KernelMin = val
 		case "kernel-max":
 			fw.KernelMax = val
+		case "opt-in":
+			on, err := strconv.ParseBool(val)
+			if err != nil {
+				return fmt.Errorf("bundle opt-in %q: %w", val, err)
+			}
+			fw.OptIn = on
 		default:
 			return fmt.Errorf("unknown bundle field %q", k)
 		}
@@ -232,7 +238,7 @@ func run(args []string) int {
 		var families familyList
 		fs.Var(&families, "kernel-family", "repeatable board kernel spec (name=..,kc=..,url=..,sig=..,sig-url=..[,release=..])")
 		var bundles bundleList
-		fs.Var(&bundles, "bundle", "repeatable multi-bundle spec (name=..,img=..,url=..,verity=..,hashtree=..,hashtree-url=..,version=..); supersedes --firmware")
+		fs.Var(&bundles, "bundle", "repeatable multi-bundle spec (name=..,img=..,url=..,verity=..,hashtree=..,hashtree-url=..,version=..[,opt-in=true]); supersedes --firmware")
 		if err := fs.Parse(rest); err != nil {
 			return 2
 		}

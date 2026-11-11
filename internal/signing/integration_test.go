@@ -315,6 +315,8 @@ func TestMultiBundleFirmwareEndToEnd(t *testing.T) {
 			VerityHash: "a1b2c3", HashTreeFile: wifiHT, HashTreeURL: srv.URL + "/wifi.hash", Chips: []string{"iwlwifi"}},
 		FirmwareSpec{Name: "amdgpu", Version: 2, ImageFile: gpuImg, ImageURL: srv.URL + "/gpu.img",
 			VerityHash: "d4e5f6", HashTreeFile: gpuHT, HashTreeURL: srv.URL + "/gpu.hash", Chips: []string{"amdgpu"}},
+		FirmwareSpec{Name: "optional", Version: 1, ImageFile: gpuImg, ImageURL: srv.URL + "/gpu.img",
+			VerityHash: "0a0b0c", HashTreeFile: gpuHT, HashTreeURL: srv.URL + "/gpu.hash", OptIn: true},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -327,10 +329,16 @@ func TestMultiBundleFirmwareEndToEnd(t *testing.T) {
 	if err := deployment.New("dev-mb", "v1").Save(wal); err != nil {
 		t.Fatal(err)
 	}
+	oldOptIn := otad.OptInPath
+	otad.OptInPath = filepath.Join(dir, "firmware-optin")
+	defer func() { otad.OptInPath = oldOptIn }()
 	fwDir := filepath.Join(dir, "slot-firmware")
 	dirs := otad.StageDirs{Rootfs: filepath.Join(dir, "slot-rootfs"), ESP: filepath.Join(dir, "slot-esp"), Firmware: fwDir}
 	if _, err := otad.Stage(context.Background(), wal, srv.URL+"/manifest.json", "", rootPub, dirs); err != nil {
 		t.Fatalf("Stage multi-bundle: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fwDir, "optional")); !os.IsNotExist(err) {
+		t.Errorf("optional bundle staged without being chosen: %v", err)
 	}
 
 	// Each bundle lands in its own slot dir and its anchor verifies to its own hash by name.

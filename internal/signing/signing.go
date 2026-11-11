@@ -110,6 +110,7 @@ type FirmwareSpec struct {
 	Chips                     []string
 	KernelMin, KernelMax      string
 	CriticalDevices           []string
+	OptIn                     bool
 }
 
 // ReleaseSpec is everything a release publishes for the rootfs and kernelcache
@@ -299,7 +300,7 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 				VerityHash: f.VerityHash, HashTreeURL: f.HashTreeURL, HashTreeHash: fhh,
 				Version: f.Version, MinVersion: f.MinVersion,
 				Chips: f.Chips, KernelMin: f.KernelMin, KernelMax: f.KernelMax,
-				CriticalDevices: f.CriticalDevices,
+				CriticalDevices: f.CriticalDevices, OptIn: f.OptIn,
 			})
 		}
 	}
