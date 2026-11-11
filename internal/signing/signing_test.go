@@ -3,6 +3,7 @@ package signing
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -103,10 +104,14 @@ func TestBuildManifestListsKernelFamilies(t *testing.T) {
 		return p
 	}
 	rootfs, kc := write("rootfs.erofs", "EROFS"), write("kc.efi", "UKI")
+	other := "aarch64"
+	if runtime.GOARCH == "arm64" {
+		other = "x86_64"
+	}
 	l4t, l4tSig := write("kc.l4t.efi", "L4T UKI"), write("kc.l4t.efi.sig", "L4T SIG")
 	out := filepath.Join(dir, "manifest.json")
 	spec := ReleaseSpec{
-		Version: "v3", MinVersion: "v1",
+		Version: "v3", MinVersion: "v1", Arch: other,
 		RootFSFile: rootfs, RootFSURL: "https://x/rootfs", RootFSVerityHash: "ab",
 		RootFSHashTreeFile: rootfs, RootFSHashTreeURL: "https://x/rootfs.hash",
 		KernelcacheFile: kc, KernelcacheURL: "https://x/kc", KernelcacheSigFile: kc, KernelcacheSigURL: "https://x/kc.sig",
@@ -116,7 +121,7 @@ func TestBuildManifestListsKernelFamilies(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(out)
-	m, err := otad.ParseManifest(b)
+	m, err := otad.ParseManifestFor(b, other)
 	if err != nil {
 		t.Fatal(err)
 	}

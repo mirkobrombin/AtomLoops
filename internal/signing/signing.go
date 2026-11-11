@@ -307,7 +307,11 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 	if err != nil {
 		return "", err
 	}
-	if _, err := otad.ParseManifest(b); err != nil {
+	arch := m.Arch
+	if arch == "" {
+		arch = "x86_64"
+	}
+	if _, err := otad.ParseManifestFor(b, arch); err != nil {
 		return "", err
 	}
 	if err := os.WriteFile(outPath, b, 0o644); err != nil {
