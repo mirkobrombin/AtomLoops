@@ -77,8 +77,9 @@ fn centerCursor() void {
 }
 
 // renderSurface paints frame zero: the backdrop, then a centered logo/wallpaper
-// composited from ESP:/EFI/atom/surface.bin ([u32 w][u32 h][w*h BGRX]). Missing or
-// malformed asset leaves the backdrop alone. The framebuffer is never mode-reset
+// composited from ESP:/EFI/atom/surface.bin ([u32 w][u32 h][w*h BGRX]), and an optional
+// ESP:/EFI/atom/notice.bin in the same format centered right below it. Missing or
+// malformed assets leave the backdrop alone. The framebuffer is never mode-reset
 // after this, so every later layer inherits these pixels.
 fn renderSurface(root: *File) void {
     const bs = uefi.system_table.boot_services orelse return;
@@ -98,15 +99,26 @@ fn renderSurface(root: *File) void {
         while (x < width) : (x += 1) fb[y * stride + x] = backdrop;
     }
 
-    const asset = readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\surface.bin")) orelse return;
-    defer uefi.pool_allocator.free(asset);
-    if (asset.len < 8) return;
+    var below: usize = height * 62 / 100;
+    if (readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\surface.bin"))) |asset| {
+        defer uefi.pool_allocator.free(asset);
+        if (blitAsset(fb, stride, width, height, asset, null)) |bottom| below = bottom;
+    }
+    if (readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\notice.bin"))) |notice| {
+        defer uefi.pool_allocator.free(notice);
+        _ = blitAsset(fb, stride, width, height, notice, below);
+    }
+}
+
+fn blitAsset(fb: [*]volatile u32, stride: usize, width: usize, height: usize, asset: []const u8, top: ?usize) ?usize {
+    if (asset.len < 8) return null;
     const lw: usize = std.mem.readInt(u32, asset[0..][0..4], .little);
     const lh: usize = std.mem.readInt(u32, asset[4..][0..4], .little);
-    if (lw == 0 or lh == 0 or lw > width or lh > height) return;
-    if (asset.len < 8 + lw * lh * 4) return;
+    if (lw == 0 or lh == 0 or lw > width or lh > height) return null;
+    if (asset.len < 8 + lw * lh * 4) return null;
     const ox = (width - lw) / 2;
-    const oy = (height - lh) / 2;
+    const oy = top orelse (height - lh) / 2;
+    if (oy + lh > height) return null;
     var yy: usize = 0;
     while (yy < lh) : (yy += 1) {
         var xx: usize = 0;
@@ -115,6 +127,7 @@ fn renderSurface(root: *File) void {
             fb[(oy + yy) * stride + (ox + xx)] = std.mem.readInt(u32, asset[off..][0..4], .little);
         }
     }
+    return oy + lh;
 }
 
 const loader_interface_guid align(8) = uefi.Guid{
