@@ -86,8 +86,10 @@ func SystemOps() Ops {
 				return true
 			}
 			for _, flags := range []uintptr{0, syscall.MS_RDONLY} {
-				if syscall.Mount(dev, dir, "f2fs", flags, "") == nil {
-					return true
+				for _, opts := range []string{F2FSOptions(DevBytes(dev)), ""} {
+					if syscall.Mount(dev, dir, "f2fs", flags, opts) == nil {
+						return true
+					}
 				}
 			}
 			return false
