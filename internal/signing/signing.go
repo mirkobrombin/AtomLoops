@@ -142,6 +142,24 @@ type ReleaseSpec struct {
 	RecoveryVersion                 int
 	RecoveryFile, RecoveryURL       string
 	RecoverySigFile, RecoverySigURL string
+
+	KernelFamilies []KernelFamilySpec
+}
+
+type KernelFamilySpec struct {
+	Name, File, URL, SigFile, SigURL, KernelRelease string
+}
+
+func validFamilyName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range name {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, error) {
@@ -186,6 +204,28 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 		KernelcacheHash:    kh,
 		KernelcacheSigURL:  r.KernelcacheSigURL,
 		KernelcacheSigHash: ksh,
+	}
+	for _, f := range r.KernelFamilies {
+		if !validFamilyName(f.Name) {
+			return "", fmt.Errorf("manifest: kernel family name %q must be lowercase letters and digits", f.Name)
+		}
+		if f.File == "" || f.URL == "" || f.SigFile == "" || f.SigURL == "" {
+			return "", fmt.Errorf("manifest: kernel family %q needs its kernelcache, URL, signature and signature URL", f.Name)
+		}
+		if _, dup := m.Family(f.Name); dup {
+			return "", fmt.Errorf("manifest: kernel family %q listed twice", f.Name)
+		}
+		fh, err := hashFile(f.File)
+		if err != nil {
+			return "", fmt.Errorf("hash kernel family %q: %w", f.Name, err)
+		}
+		fsh, err := hashFile(f.SigFile)
+		if err != nil {
+			return "", fmt.Errorf("hash kernel family %q signature: %w", f.Name, err)
+		}
+		m.KernelFamilies = append(m.KernelFamilies, otad.KernelFamily{
+			Name: f.Name, URL: f.URL, Hash: fh, SigURL: f.SigURL, SigHash: fsh, KernelRelease: f.KernelRelease,
+		})
 	}
 	if r.LoaderFile != "" {
 		if r.LoaderURL == "" || r.LoaderSigFile == "" || r.LoaderSigURL == "" {

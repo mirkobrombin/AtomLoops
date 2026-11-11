@@ -95,6 +95,55 @@ func TestBuildManifestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBuildManifestListsKernelFamilies(t *testing.T) {
+	dir := t.TempDir()
+	write := func(n, b string) string {
+		p := filepath.Join(dir, n)
+		os.WriteFile(p, []byte(b), 0o644)
+		return p
+	}
+	rootfs, kc := write("rootfs.erofs", "EROFS"), write("kc.efi", "UKI")
+	l4t, l4tSig := write("kc.l4t.efi", "L4T UKI"), write("kc.l4t.efi.sig", "L4T SIG")
+	out := filepath.Join(dir, "manifest.json")
+	spec := ReleaseSpec{
+		Version: "v3", MinVersion: "v1",
+		RootFSFile: rootfs, RootFSURL: "https://x/rootfs", RootFSVerityHash: "ab",
+		RootFSHashTreeFile: rootfs, RootFSHashTreeURL: "https://x/rootfs.hash",
+		KernelcacheFile: kc, KernelcacheURL: "https://x/kc", KernelcacheSigFile: kc, KernelcacheSigURL: "https://x/kc.sig",
+		KernelFamilies: []KernelFamilySpec{{Name: "l4t", File: l4t, URL: "https://x/kc.l4t", SigFile: l4tSig, SigURL: "https://x/kc.l4t.sig", KernelRelease: "5.15.148-tegra"}},
+	}
+	if _, err := BuildManifest(out, spec); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(out)
+	m, err := otad.ParseManifest(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok := m.Family("l4t")
+	if !ok || f.URL != "https://x/kc.l4t" || f.SigURL != "https://x/kc.l4t.sig" || f.KernelRelease != "5.15.148-tegra" {
+		t.Fatalf("family %+v %v", f, ok)
+	}
+	if otad.VerifySHA256(l4t, f.Hash) != nil || otad.VerifySHA256(l4tSig, f.SigHash) != nil {
+		t.Fatal("family hashes do not match the files")
+	}
+	for _, bad := range []KernelFamilySpec{
+		{Name: "L4T", File: l4t, URL: "u", SigFile: l4tSig, SigURL: "s"},
+		{Name: "../x", File: l4t, URL: "u", SigFile: l4tSig, SigURL: "s"},
+		{Name: "l4t", File: l4t, URL: "u"},
+	} {
+		spec.KernelFamilies = []KernelFamilySpec{bad}
+		if _, err := BuildManifest(out, spec); err == nil {
+			t.Errorf("family %+v accepted", bad)
+		}
+	}
+	ok1 := KernelFamilySpec{Name: "l4t", File: l4t, URL: "u", SigFile: l4tSig, SigURL: "s"}
+	spec.KernelFamilies = []KernelFamilySpec{ok1, ok1}
+	if _, err := BuildManifest(out, spec); err == nil {
+		t.Error("duplicate family accepted")
+	}
+}
+
 func TestTwoTierTrustChain(t *testing.T) {
 	dir := t.TempDir()
 	rootPriv := filepath.Join(dir, "root.key")

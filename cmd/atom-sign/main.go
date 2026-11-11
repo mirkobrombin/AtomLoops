@@ -80,6 +80,41 @@ func (b *bundleList) Set(v string) error {
 	return nil
 }
 
+type familyList []signing.KernelFamilySpec
+
+func (f *familyList) String() string { return fmt.Sprintf("%d kernel families", len(*f)) }
+
+func (f *familyList) Set(v string) error {
+	var k signing.KernelFamilySpec
+	for _, kv := range strings.Split(v, ",") {
+		key, val, ok := strings.Cut(kv, "=")
+		if !ok {
+			return fmt.Errorf("kernel family field %q is not key=value", kv)
+		}
+		switch strings.TrimSpace(key) {
+		case "name":
+			k.Name = val
+		case "kc", "kernelcache":
+			k.File = val
+		case "url":
+			k.URL = val
+		case "sig":
+			k.SigFile = val
+		case "sig-url":
+			k.SigURL = val
+		case "release":
+			k.KernelRelease = val
+		default:
+			return fmt.Errorf("unknown kernel family field %q", key)
+		}
+	}
+	if k.Name == "" || k.File == "" || k.URL == "" || k.SigFile == "" || k.SigURL == "" {
+		return fmt.Errorf("kernel family needs name, kc, url, sig, sig-url")
+	}
+	*f = append(*f, k)
+	return nil
+}
+
 func run(args []string) int {
 	if len(args) == 0 {
 		usage()
@@ -194,6 +229,8 @@ func run(args []string) int {
 		recoverySig := fs.String("recovery-sig", "", "recovery image signature file")
 		recoverySigURL := fs.String("recovery-sig-url", "", "URL the device will fetch the recovery signature from")
 		recoveryVersion := fs.Int("recovery-version", 0, "recovery image version")
+		var families familyList
+		fs.Var(&families, "kernel-family", "repeatable board kernel spec (name=..,kc=..,url=..,sig=..,sig-url=..[,release=..])")
 		var bundles bundleList
 		fs.Var(&bundles, "bundle", "repeatable multi-bundle spec (name=..,img=..,url=..,verity=..,hashtree=..,hashtree-url=..,version=..); supersedes --firmware")
 		if err := fs.Parse(rest); err != nil {
@@ -241,6 +278,7 @@ func run(args []string) int {
 			RecoveryVersion: *recoveryVersion,
 			RecoveryFile:    *recovery, RecoveryURL: *recoveryURL,
 			RecoverySigFile: *recoverySig, RecoverySigURL: *recoverySigURL,
+			KernelFamilies: families,
 		}, fwSpec...)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "atom-sign:", err)

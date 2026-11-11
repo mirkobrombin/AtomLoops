@@ -35,6 +35,11 @@ func ReleaseFiles(m Manifest) ([]ReleaseFile, error) {
 			ReleaseFile{"kernelcache-recovery.efi.sig", m.RecoverySigURL, m.RecoverySigHash},
 			ReleaseFile{"kernelcache-recovery.efi", m.RecoveryURL, m.RecoveryHash})
 	}
+	if f, ok := m.Family(MachineFamily()); ok && f.SigURL != "" {
+		files = append(files,
+			ReleaseFile{"kernelcache." + f.Name + ".efi.sig", f.SigURL, f.SigHash},
+			ReleaseFile{"kernelcache." + f.Name + ".efi", f.URL, f.Hash})
+	}
 	return append(files,
 		ReleaseFile{"rootfs.hash", m.RootFSHashTreeURL, m.RootFSHashTreeHash},
 		ReleaseFile{"rootfs.erofs", m.RootFSURL, m.RootFSHash}), nil
