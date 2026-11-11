@@ -290,6 +290,7 @@ func PromoteSlots(dirs StageDirs) error {
 	if err := preflightSlots(groups); err != nil {
 		return err
 	}
+	moved := false
 	for _, g := range groups {
 		var moving []string
 		for _, s := range g.suffixes {
@@ -306,6 +307,12 @@ func PromoteSlots(dirs StageDirs) error {
 			}
 			moving = append(moving, s)
 		}
+		if g.prefix == "kernelcache" && len(moving) > 0 {
+			moved = true
+			if err := markFamilies(g.dir); err != nil {
+				return err
+			}
+		}
 		for _, from := range []string{"-active", "-next"} {
 			to := "-prev"
 			if from == "-next" {
@@ -319,6 +326,9 @@ func PromoteSlots(dirs StageDirs) error {
 				}
 			}
 		}
+	}
+	if dirs.ESP != "" && (moved || nonEmpty(filepath.Join(dirs.ESP, familiesPending))) {
+		return promoteFamilies(dirs.ESP)
 	}
 	return nil
 }
@@ -336,6 +346,11 @@ func CleanupNextSlots(dirs StageDirs) {
 	if dirs.ESP != "" {
 		for _, s := range []string{".efi", ".efi.sig"} {
 			_ = os.Remove(filepath.Join(dirs.ESP, "kernelcache-next"+s))
+		}
+		for _, name := range knownFamilies() {
+			for _, s := range familySuffixes(name) {
+				_ = os.Remove(filepath.Join(dirs.ESP, "kernelcache-next"+s))
+			}
 		}
 	}
 	if dirs.Rootfs != "" {

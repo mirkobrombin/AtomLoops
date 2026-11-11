@@ -58,6 +58,8 @@ type Manifest struct {
 	// never strands a GPU driver. Empty means no coupling (firmware-only or legacy).
 	KernelRelease string `json:"kernel_release,omitempty"`
 
+	KernelFamilies []KernelFamily `json:"kernel_families,omitempty"`
+
 	LoaderVersion int    `json:"loader_version,omitempty"`
 	LoaderURL     string `json:"loader_url,omitempty"`
 	LoaderHash    string `json:"loader_hash,omitempty"`

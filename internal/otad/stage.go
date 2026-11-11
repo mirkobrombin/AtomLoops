@@ -154,6 +154,11 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 		os.Remove(kSigPath)
 		return "", err
 	}
+	if err := stageFamily(ctx, m, dirs.ESP); err != nil {
+		os.Remove(kPath)
+		os.Remove(kSigPath)
+		return "", err
+	}
 
 	// 3b. firmware (optional, independent track): each add-on bundle -> its own slot dir
 	// /boot/firmware/<name>/firmware-next.img (+ hash tree + a per-bundle copy of the
