@@ -577,7 +577,7 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
     }
     const img = readFile(root, atomPath(&pbuf, name, "")) orelse {
         slog.record(slog.ev_slot_missing, &.{ idx, 0 });
-        puts("slot image missing\r\n");
+        dbg("slot image missing\r\n");
         return failed("the system kernel is missing");
     };
     defer uefi.pool_allocator.free(img);
@@ -585,14 +585,14 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
     var sbuf: [96]u16 = undefined;
     const sig = readFile(root, atomPath(&sbuf, name, ".sig")) orelse {
         slog.record(slog.ev_slot_missing, &.{ idx, 1 });
-        puts("slot signature missing -- refusing\r\n");
+        dbg("slot signature missing -- refusing\r\n");
         return failed("the system kernel signature is missing");
     };
     defer uefi.pool_allocator.free(sig);
 
     if (!verifyEd25519(img, sig, key)) {
         slog.record(slog.ev_signature_bad, &.{idx});
-        puts("signature INVALID -- refusing to chain\r\n");
+        dbg("signature INVALID -- refusing to chain\r\n");
         return failed("the system kernel has an invalid signature");
     }
     dbg("signature OK\r\n");
@@ -603,7 +603,7 @@ fn chainloadSlot(root: *File, slot: []const u8, key: [32]u8) bool {
         if (nvFloor()) |floor| {
             if (ver < floor) {
                 slog.record(slog.ev_rollback_refused, &.{ idx, ver, floor });
-                puts("anti-rollback: slot version below the floor -- refusing\r\n");
+                dbg("anti-rollback: slot version below the floor -- refusing\r\n");
                 return failed("the system kernel is older than this device allows");
             }
             dbg("anti-rollback: slot at or above floor\r\n");
@@ -806,7 +806,7 @@ pub fn main() void {
         dbg("no boot-state, unlock armed -> recovery\r\n");
         cascade = .recovery;
     } else {
-        puts("no boot-state, defaulting to active\r\n");
+        dbg("no boot-state, defaulting to active\r\n");
     }
 
     if (unlock_armed) slog.record(slog.ev_unlock_armed, &.{});
