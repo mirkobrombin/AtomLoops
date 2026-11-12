@@ -102,8 +102,10 @@ func main() {
 		feed := fs.String("feed", defaultFeed(runtime.GOARCH), "update feed base URL")
 		cur := fs.String("current", "", "installed version (default: read deployment)")
 		wal := fs.String("wal", defaultWAL, "deployment WAL path")
+		chSpec, chFile := channelFlags(fs)
 		fs.Parse(os.Args[2:])
-		st := check(*feed, *cur, *wal)
+		c := cfg{feed: *feed, channels: resolveChannels(fs, *chSpec, *chFile)}
+		st := check(c.feedURL(), *cur, *wal)
 		b, _ := json.MarshalIndent(st, "", "  ")
 		fmt.Println(string(b))
 		if st.State == "error" {
@@ -120,8 +122,9 @@ func main() {
 		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache staging dir")
 		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
 		stageLock := fs.String("stage-lock", "/run/updated-stage.lock", "cross-process update staging lock")
+		chSpec, chFile := channelFlags(fs)
 		fs.Parse(os.Args[2:])
-		c := cfg{feed: *feed, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock}
+		c := cfg{feed: *feed, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock, channels: resolveChannels(fs, *chSpec, *chFile)}
 		statuses := statusStore{statePath: c.state}
 		st, err := statuses.publishPoll(pollOnce(c))
 		if err != nil {
@@ -144,8 +147,9 @@ func main() {
 		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
 		stageLock := fs.String("stage-lock", "/run/updated-stage.lock", "cross-process update staging lock")
 		history := fs.String("history", defaultHistory, "installed version history")
+		chSpec, chFile := channelFlags(fs)
 		fs.Parse(os.Args[2:])
-		c := cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock, history: *history}
+		c := cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock, history: *history, channels: resolveChannels(fs, *chSpec, *chFile)}
 		if err := serve(c); err != nil {
 			fmt.Fprintf(os.Stderr, "updated: serve: %v\n", err)
 			os.Exit(1)
@@ -417,10 +421,11 @@ type cfg struct {
 	firmwareDir                string
 	stageLock                  string
 	history                    string
+	channels                   channels
 }
 
 // pollOnce checks the feed without downloading or staging artifacts.
-func pollOnce(c cfg) Status { return check(c.feed, c.current, c.wal) }
+func pollOnce(c cfg) Status { return check(c.feedURL(), c.current, c.wal) }
 
 // writeState atomically writes the status file (temp + rename). Empty path is a no-op.
 func writeState(path string, s Status) error {
@@ -506,7 +511,7 @@ func stage(c cfg, expectedManifestSHA256 string, onProgress otad.ProgressFunc) (
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	ctx = otad.WithProgress(ctx, onProgress)
-	msg, err := otad.StageExpectedManifest(ctx, c.wal, strings.TrimRight(c.feed, "/")+"/manifest.json", "", rootPub,
+	msg, err := otad.StageExpectedManifest(ctx, c.wal, strings.TrimRight(c.feedURL(), "/")+"/manifest.json", "", rootPub,
 		otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir, Firmware: c.firmwareDir}, expectedManifestSHA256)
 	if err != nil {
 		_ = sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompUpdated, Code: sealedlog.OtaDownloadFail})
@@ -723,6 +728,7 @@ func newUpdateServer(c cfg) *http.Server {
 		json.NewEncoder(w).Encode(clientStatus(statuses.get()))
 	})
 	registerLoaderHandlers(mux, c, &statuses)
+	registerChannelHandlers(mux, c, &statuses)
 	registerHistoryHandler(mux, c)
 	registerFirmwareHandlers(mux, c)
 	mux.HandleFunc("/reboot", func(w http.ResponseWriter, r *http.Request) {
@@ -778,6 +784,6 @@ func serve(c cfg) error {
 	if err := recordRunning(c.history, runningVersion(c.wal), osRelease("/etc/os-release", "BUILD_ID"), time.Now()); err != nil {
 		fmt.Fprintf(os.Stderr, "updated: history %s: %v\n", c.history, err)
 	}
-	fmt.Fprintf(os.Stderr, "updated: serving %s (feed %s)\n", c.sock, c.feed)
+	fmt.Fprintf(os.Stderr, "updated: serving %s (feed %s)\n", c.sock, c.feedURL())
 	return newUpdateServer(c).Serve(ln)
 }

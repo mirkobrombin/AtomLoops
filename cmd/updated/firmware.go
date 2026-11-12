@@ -17,7 +17,7 @@ type optionalFirmware struct {
 }
 
 func manifestURL(c cfg) string {
-	return strings.TrimRight(c.feed, "/") + "/manifest.json"
+	return strings.TrimRight(c.feedURL(), "/") + "/manifest.json"
 }
 
 func listOptionalFirmware(c cfg) ([]otad.OptInOffer, error) {

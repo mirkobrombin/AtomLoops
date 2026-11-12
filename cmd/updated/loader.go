@@ -50,7 +50,7 @@ func stageLoader(c cfg, retry bool) (string, error) {
 	defer releaseStageLock(lock)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	return otad.StageLoader(ctx, c.wal, strings.TrimRight(c.feed, "/")+"/manifest.json", "", rootPub,
+	return otad.StageLoader(ctx, c.wal, strings.TrimRight(c.feedURL(), "/")+"/manifest.json", "", rootPub,
 		otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir}, retry)
 }
 
@@ -65,7 +65,7 @@ func maybeStageRecovery(c cfg, checked Status) {
 	defer releaseStageLock(lock)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	msg, err := otad.StageRecovery(ctx, c.wal, strings.TrimRight(c.feed, "/")+"/manifest.json", "", rootPub,
+	msg, err := otad.StageRecovery(ctx, c.wal, strings.TrimRight(c.feedURL(), "/")+"/manifest.json", "", rootPub,
 		otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir})
 	if err != nil {
 		log.Printf("updated: %v", err)
