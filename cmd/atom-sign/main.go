@@ -237,6 +237,7 @@ func run(args []string) int {
 		recoveryVersion := fs.Int("recovery-version", 0, "recovery image version")
 		applyClass := fs.String("apply-class", "", "how the OS applies this release (opaque to AtomLoops, e.g. a class name the OS defines)")
 		liveFrom := fs.String("live-from", "", "the one earlier release this one can be applied to without a reboot")
+		kernelRelease := fs.String("kernel-release", "", "kernel version (uname -r) the kernelcache runs")
 		var families familyList
 		fs.Var(&families, "kernel-family", "repeatable board kernel spec (name=..,kc=..,url=..,sig=..,sig-url=..[,release=..])")
 		var bundles bundleList
@@ -288,6 +289,7 @@ func run(args []string) int {
 			RecoverySigFile: *recoverySig, RecoverySigURL: *recoverySigURL,
 			KernelFamilies: families,
 			ApplyClass:     *applyClass, LiveFrom: *liveFrom,
+			KernelRelease: *kernelRelease,
 		}, fwSpec...)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "atom-sign:", err)

@@ -243,7 +243,7 @@ func TestBuildManifestCarriesTheApplyClass(t *testing.T) {
 		t.Fatalf("a release without an apply class must stay reboot only: %+v", m.Apply)
 	}
 
-	spec.ApplyClass, spec.LiveFrom = "reload", "v317"
+	spec.ApplyClass, spec.LiveFrom, spec.KernelRelease = "reload", "v317", "7.2.11"
 	if _, err := BuildManifest(out, spec); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestBuildManifestCarriesTheApplyClass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.ApplyClass() != "reload" || !m.LiveFrom("v317") || !m.LiveFrom("317") || m.LiveFrom("v316") || m.LiveFrom("") {
+	if m.KernelRelease != "7.2.11" || m.ApplyClass() != "reload" || !m.LiveFrom("v317") || !m.LiveFrom("317") || m.LiveFrom("v316") || m.LiveFrom("") {
 		t.Errorf("apply class not carried: %+v", m.Apply)
 	}
 

@@ -147,6 +147,7 @@ type ReleaseSpec struct {
 	KernelFamilies []KernelFamilySpec
 
 	ApplyClass, LiveFrom string
+	KernelRelease        string
 }
 
 type KernelFamilySpec struct {
@@ -217,6 +218,7 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 		}
 		m.Apply = &otad.ApplySpec{Class: r.ApplyClass, LiveFrom: r.LiveFrom}
 	}
+	m.KernelRelease = r.KernelRelease
 	for _, f := range r.KernelFamilies {
 		if !validFamilyName(f.Name) {
 			return "", fmt.Errorf("manifest: kernel family name %q must be lowercase letters and digits", f.Name)
