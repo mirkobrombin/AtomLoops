@@ -241,18 +241,22 @@ func HandleLoaderCandidate(dirs StageDirs) (string, error) {
 	defer cancelLoaderCandidate(dirs)
 	ran := markerVersion(filepath.Join(dirs.ESP, loaderRanFile))
 	kPath := filepath.Join(dirs.ESP, "kernelcache-next.efi")
+	img, readErr := os.ReadFile(kPath)
+	sum := sha256.Sum256(img)
+	intact := readErr == nil && len(img) > 0 && strings.EqualFold(hex.EncodeToString(sum[:]), cand["sha256"])
 	if ran != version {
+		if !intact {
+			return fmt.Sprintf("loader: version %d was no longer on disk when the machine started, it will be staged again", version), nil
+		}
 		if err := writeMarker(filepath.Join(dirs.ESP, loaderFailedFile), "version="+strconv.Itoa(version)); err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("loader: version %d did not start, the previous loader stays", version), nil
 	}
-	img, err := os.ReadFile(kPath)
-	if err != nil {
-		return "", fmt.Errorf("loader: candidate image missing: %w", err)
+	if readErr != nil {
+		return "", fmt.Errorf("loader: candidate image missing: %w", readErr)
 	}
-	sum := sha256.Sum256(img)
-	if !strings.EqualFold(hex.EncodeToString(sum[:]), cand["sha256"]) {
+	if !intact {
 		return "", errors.New("loader: candidate image changed since it was staged, not installing")
 	}
 	if err := installLoaderImage(dirs, kPath); err != nil {

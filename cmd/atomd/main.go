@@ -39,6 +39,15 @@ func pickCounter(filePath, readCmd, advanceCmd string) otad.CounterStore {
 	return otad.FileCounter{Path: filePath}
 }
 
+func emitBootRecord(code sealedlog.Code) {
+	for i := 0; i < 50; i++ {
+		if sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompAtomd, Code: code}) == nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manifestURL, revocationURL, pubkeyPath, cron, installedMarker string, dirs otad.StageDirs) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -51,11 +60,11 @@ func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manife
 
 	if msg, err := otad.BootSuccess(wal, healthDir, store, dirs); err != nil {
 		fmt.Fprintln(os.Stderr, "atomd: boot-success:", err)
-		_ = sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompAtomd, Code: sealedlog.CodeFail})
+		emitBootRecord(sealedlog.CodeFail)
 	} else {
 		fmt.Println(msg)
 		audit.Append(auditPath, "boot-success", msg, time.Now)
-		_ = sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompAtomd, Code: sealedlog.OtaHealthy})
+		emitBootRecord(sealedlog.OtaHealthy)
 	}
 
 	sched := scheduler.New(scheduler.WithLogger(func(m string) { fmt.Println("atomd:", m) }))
@@ -213,7 +222,7 @@ func run(args []string) int {
 		if err != nil {
 			code = sealedlog.CodeFail
 		}
-		_ = sealedlog.Emit(sealedlog.DefaultSocket, sealedlog.Record{Component: sealedlog.CompAtomd, Code: code})
+		emitBootRecord(code)
 		return report(msg, err)
 	case "recovery":
 		return runRecovery(rest)

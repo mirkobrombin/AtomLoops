@@ -113,6 +113,9 @@ func StageRecovery(ctx context.Context, walPath, manifestURL, revocationURL stri
 			return fmt.Sprintf("recovery: version %d is installed, the release carries %d, keeping it", have, m.RecoveryVersion), nil
 		}
 	}
+	if v := markerVersion(filepath.Join(dirs.ESP, loaderCandidateFile)); v != 0 {
+		return "", fmt.Errorf("recovery: boot loader %d is waiting for the next start, recovery follows after it", v)
+	}
 	os.Remove(filepath.Join(dirs.ESP, "kernelcache-next.efi"))
 	next := filepath.Join(dirs.ESP, recoveryNextFile)
 	cleanup := func() {

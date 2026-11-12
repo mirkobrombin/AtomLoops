@@ -92,6 +92,25 @@ func TestStageRecoveryInstallsVerifiedImage(t *testing.T) {
 	}
 }
 
+func TestStageRecoveryKeepsAnArmedLoaderCandidate(t *testing.T) {
+	img := []byte("MZ new recovery image")
+	manifest, rootPub := newRecoveryFeed(t, img, nil)
+	dirs := recoveryDirs(t)
+	wal := e2eWAL(t)
+	next := filepath.Join(dirs.ESP, "kernelcache-next.efi")
+	os.WriteFile(next, loaderImage("2"), 0o644)
+	os.WriteFile(filepath.Join(dirs.ESP, loaderCandidateFile), []byte("version=2\nsha256=x\n"), 0o644)
+	if _, err := StageRecovery(context.Background(), wal, manifest, "", rootPub, dirs); err == nil {
+		t.Fatal("recovery staged over an armed loader candidate")
+	}
+	if got := readFileT(t, next); got != string(loaderImage("2")) {
+		t.Fatal("recovery staging removed the loader candidate image")
+	}
+	if got := readFileT(t, filepath.Join(dirs.ESP, recoveryFile)); got != "MZ old recovery" {
+		t.Fatal("recovery image replaced while a loader candidate was armed")
+	}
+}
+
 func TestStageRecoveryRefusesBadSignature(t *testing.T) {
 	img := []byte("MZ tampered recovery")
 	manifest, rootPub := newRecoveryFeed(t, img, make([]byte, ed25519.SignatureSize))

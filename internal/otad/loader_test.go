@@ -189,6 +189,30 @@ func TestLoaderThatDidNotStartIsNotInstalled(t *testing.T) {
 	}
 }
 
+func TestLoaderCandidateGoneBeforeBootIsNotMarkedFailed(t *testing.T) {
+	old := []byte("MZ old loader")
+	feed := newLoaderFeed(t, 2, loaderImage("2"), nil)
+	dirs := loaderDirs(t, old)
+	wal := e2eWAL(t)
+	if _, err := StageLoader(context.Background(), wal, feed.base+"/manifest.json", "", feed.rootPub, dirs, false); err != nil {
+		t.Fatalf("StageLoader: %v", err)
+	}
+	os.Remove(filepath.Join(dirs.ESP, "kernelcache-next.efi"))
+	msg, err := BootSuccess(wal, t.TempDir(), nil, dirs)
+	if err != nil {
+		t.Fatalf("BootSuccess: %v", err)
+	}
+	if !strings.Contains(msg, "staged again") {
+		t.Fatalf("BootSuccess message = %q", msg)
+	}
+	if st := ReadLoaderStatus(dirs); st.Failed != 0 || st.Candidate != 0 {
+		t.Fatalf("status after a vanished candidate = %+v", st)
+	}
+	if _, err := StageLoader(context.Background(), wal, feed.base+"/manifest.json", "", feed.rootPub, dirs, false); err != nil {
+		t.Fatalf("restage after a vanished candidate refused: %v", err)
+	}
+}
+
 func TestLoaderRefusals(t *testing.T) {
 	t.Run("system update pending", func(t *testing.T) {
 		feed := newLoaderFeed(t, 2, loaderImage("2"), nil)
