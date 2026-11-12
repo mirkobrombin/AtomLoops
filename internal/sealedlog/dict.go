@@ -198,6 +198,8 @@ const (
 	OtaDownloadFail
 	OtaVerifyFail
 	OtaReboot
+	OtaLiveApplied
+	OtaLiveRollback
 )
 
 const (
@@ -242,7 +244,7 @@ var familyCodeNames = map[Family][]string{
 var kernelNames = []string{"stage", "root-mounted", "init-started", "init-exit", "panic", "oops", "watchdog",
 	"suspend", "resume", "thermal", "tpm-launch", "driver-fail"}
 
-var otaNames = []string{"staged", "promoted", "rollback", "healthy", "download-fail", "verify-fail", "reboot"}
+var otaNames = []string{"staged", "promoted", "rollback", "healthy", "download-fail", "verify-fail", "reboot", "live-applied", "live-rollback"}
 
 var sessionNames = []string{"login", "login-fail", "logout", "lock", "app-crash", "first-frame", "disk-error",
 	"battery-critical"}

@@ -45,6 +45,7 @@ nav:
       - The model: concepts/model.md
       - Deployment lifecycle: concepts/deployment.md
       - Boot lifecycle: concepts/boot.md
+      - Live apply: concepts/live.md
   - Architecture:
       - Components: architecture/components.md
       - The deployment WAL: architecture/wal.md

@@ -9,6 +9,7 @@
 //	updated check --feed URL [--current V]              one-shot: print status JSON
 //	updated poll  --feed URL --state P                  check + write state
 //	updated serve --feed URL --socket P --state P       socket responder for the UI
+//	updated apply-live [--check]                        switch to the staged update without a reboot
 package main
 
 import (
@@ -55,16 +56,17 @@ const defaultWAL = "/boot/rootfs/deployment.json"
 // idle (no badge) | available (download badge) | downloading (progress bar) |
 // ready (green check, offer reboot) | error.
 type Status struct {
-	State           string `json:"state"`
-	Current         string `json:"current"`
-	Latest          string `json:"latest"`
-	ProductName     string `json:"product_name,omitempty"`
-	ProductVersion  string `json:"product_version,omitempty"`
-	ProductBuild    string `json:"product_build,omitempty"`
-	ConsentToken    string `json:"consent_token,omitempty"`
-	Percent         int    `json:"percent"`
-	Error           string `json:"error,omitempty"`
-	LoaderAvailable int    `json:"loader_available,omitempty"`
+	State           string          `json:"state"`
+	Current         string          `json:"current"`
+	Latest          string          `json:"latest"`
+	ProductName     string          `json:"product_name,omitempty"`
+	ProductVersion  string          `json:"product_version,omitempty"`
+	ProductBuild    string          `json:"product_build,omitempty"`
+	ConsentToken    string          `json:"consent_token,omitempty"`
+	Percent         int             `json:"percent"`
+	Error           string          `json:"error,omitempty"`
+	LoaderAvailable int             `json:"loader_available,omitempty"`
+	Live            *otad.LiveOffer `json:"live,omitempty"`
 	manifestSHA256  string
 	retryable       bool
 }
@@ -147,9 +149,10 @@ func main() {
 		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
 		stageLock := fs.String("stage-lock", "/run/updated-stage.lock", "cross-process update staging lock")
 		history := fs.String("history", defaultHistory, "installed version history")
+		livePCR := fs.Int("live-pcr", 0, "TPM PCR a live swap is measured into (0: none)")
 		chSpec, chFile := channelFlags(fs)
 		fs.Parse(os.Args[2:])
-		c := cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock, history: *history, channels: resolveChannels(fs, *chSpec, *chFile)}
+		c := cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock, history: *history, livePCR: *livePCR, channels: resolveChannels(fs, *chSpec, *chFile)}
 		if err := serve(c); err != nil {
 			fmt.Fprintf(os.Stderr, "updated: serve: %v\n", err)
 			os.Exit(1)
@@ -168,6 +171,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "updated: fetch-release: %v\n", err)
 			os.Exit(1)
 		}
+	case "apply-live":
+		os.Exit(applyLiveCommand(os.Args[2:]))
 	case "version":
 		fs := flag.NewFlagSet("version", flag.ExitOnError)
 		wal := fs.String("wal", defaultWAL, "deployment WAL path")
@@ -216,7 +221,7 @@ func main() {
 		}
 		fmt.Println(msg)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: updated check|poll|serve|fetch-release|version|export-release|stage-from ...")
+		fmt.Fprintln(os.Stderr, "usage: updated check|poll|serve|fetch-release|version|export-release|stage-from|apply-live ...")
 		os.Exit(2)
 	}
 }
@@ -421,6 +426,7 @@ type cfg struct {
 	firmwareDir                string
 	stageLock                  string
 	history                    string
+	livePCR                    int
 	channels                   channels
 }
 
@@ -696,7 +702,7 @@ func newUpdateServer(c cfg) *http.Server {
 		if !requireMethod(w, r, http.MethodGet) {
 			return
 		}
-		writeJSON(w, statuses.getForClient())
+		writeJSON(w, liveOffer(c, statuses.getForClient()))
 	})
 	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodGet) {
@@ -731,6 +737,7 @@ func newUpdateServer(c cfg) *http.Server {
 	registerChannelHandlers(mux, c, &statuses)
 	registerHistoryHandler(mux, c)
 	registerFirmwareHandlers(mux, c)
+	registerLiveHandlers(mux, c, &statuses)
 	mux.HandleFunc("/reboot", func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodPost) {
 			return

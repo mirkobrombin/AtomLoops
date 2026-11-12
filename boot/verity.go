@@ -144,6 +144,7 @@ const (
 	dmDevRemove     = 4
 	dmDevSuspend    = 6
 	dmTableLoad     = 9
+	dmDeferredFlag  = 1 << 17
 )
 
 func dmRequest(nr uintptr) uintptr {
@@ -266,6 +267,16 @@ func CloseVerity(name string) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return err
+}
+
+// CloseVerityDeferred removes a mapping that may still be in use: the kernel
+// drops it on its last close instead of refusing with EBUSY.
+func CloseVerityDeferred(name string) error {
+	os.Remove(filepath.Join("/dev/mapper", name))
+	if _, err := dmCall(dmDevRemove, name, dmDeferredFlag, nil, 0); err != nil && err != syscall.ENXIO {
+		return err
+	}
+	return nil
 }
 
 // DevBytes is the size of a block device in bytes, 0 when it cannot be read.

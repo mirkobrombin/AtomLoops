@@ -11,6 +11,9 @@ const (
 	loopCtlGetFree  = 0x4C82
 	loopConfigure   = 0x4C0A
 	loopClrFd       = 0x4C01
+	loopSetStatus64 = 0x4C04
+	loopGetStatus64 = 0x4C05
+	loFlagsAutoclr  = 4
 	loFlagsReadOnly = 1
 	loNameSize      = 64
 	loKeySize       = 32
@@ -95,5 +98,23 @@ func DetachLoop(dev string) error {
 	}
 	defer f.Close()
 	_, err = ioctl(f.Fd(), loopClrFd, 0)
+	return err
+}
+
+// AutoclearLoop lets a loop device bound by AttachLoop release itself once its
+// last user closes it, so a root still held by running processes is freed only
+// when they are gone.
+func AutoclearLoop(dev string) error {
+	f, err := os.OpenFile(dev, os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	var info loopInfo64
+	if _, err := ioctl(f.Fd(), loopGetStatus64, uintptr(unsafe.Pointer(&info))); err != nil {
+		return err
+	}
+	info.flags |= loFlagsAutoclr
+	_, err = ioctl(f.Fd(), loopSetStatus64, uintptr(unsafe.Pointer(&info)))
 	return err
 }

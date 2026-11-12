@@ -23,7 +23,9 @@ cd loader && sh build.sh   # BOOTX64.EFI (needs Zig 0.16)
   recovery.
 
 It writes the boot-state crash-durably and never switches the running system out
-from under itself. See [Components](../architecture/components.md) and
+from under itself on its own. A staged release that allows it can be applied
+without a reboot with `updated apply-live`; see [Live apply](../concepts/live.md).
+See [Components](../architecture/components.md) and
 [The deployment WAL](../architecture/wal.md).
 
 ## `atom-sign` (release tool)
@@ -36,6 +38,10 @@ producing half of the [trust model](../security/trust-model.md).
 The concrete, ordered commands for cutting a release, from generating keys to
 signing the manifest, are in the [release runbook](../RELEASE-RUNBOOK.md), which is
 kept as the authoritative operational reference so the steps stay in one place.
+
+`atom-sign manifest --apply-class CLASS --live-from VERSION` marks a release as
+applicable live from one earlier release. The class is passed to the system's
+hooks unchanged.
 
 ## The loader
 

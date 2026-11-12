@@ -157,26 +157,9 @@ func ExportRelease(walPath string, dirs StageDirs, rootPub []byte, out string) (
 	if err != nil {
 		return Manifest{}, err
 	}
-	anchor := anchorDir(dirs.Rootfs, version)
-	data := make([][]byte, len(anchorFiles))
-	for i, name := range anchorFiles {
-		if data[i], err = os.ReadFile(filepath.Join(anchor, name)); err != nil {
-			return Manifest{}, fmt.Errorf("no signed copy of release %s is kept here: %w", version, err)
-		}
-	}
-	signingPub, _, err := trust.VerifyCert(data[2], data[3], rootPub, time.Now())
-	if err != nil {
-		return Manifest{}, fmt.Errorf("release %s: %w", version, err)
-	}
-	if len(signingPub) != ed25519.PublicKeySize || !trust.Verify(data[0], data[1], signingPub) {
-		return Manifest{}, fmt.Errorf("release %s: manifest signature invalid", version)
-	}
-	m, err := ParseManifestFor(data[0], manifestArchOf(data[0]))
+	m, data, err := keptManifest(dirs.Rootfs, version, rootPub)
 	if err != nil {
 		return Manifest{}, err
-	}
-	if m.Version != version {
-		return Manifest{}, fmt.Errorf("kept manifest is %s, the slots run %s", m.Version, version)
 	}
 	slots := []struct{ name, path, hash string }{
 		{"rootfs.erofs", filepath.Join(dirs.Rootfs, "rootfs-active.erofs"), m.RootFSHash},
@@ -206,6 +189,32 @@ func ExportRelease(walPath string, dirs StageDirs, rootPub []byte, out string) (
 		}
 	}
 	return m, nil
+}
+
+func keptManifest(rootfs, version string, rootPub []byte) (Manifest, [][]byte, error) {
+	anchor := anchorDir(rootfs, version)
+	data := make([][]byte, len(anchorFiles))
+	var err error
+	for i, name := range anchorFiles {
+		if data[i], err = os.ReadFile(filepath.Join(anchor, name)); err != nil {
+			return Manifest{}, nil, fmt.Errorf("no signed copy of release %s is kept here: %w", version, err)
+		}
+	}
+	signingPub, _, err := trust.VerifyCert(data[2], data[3], rootPub, time.Now())
+	if err != nil {
+		return Manifest{}, nil, fmt.Errorf("release %s: %w", version, err)
+	}
+	if len(signingPub) != ed25519.PublicKeySize || !trust.Verify(data[0], data[1], signingPub) {
+		return Manifest{}, nil, fmt.Errorf("release %s: manifest signature invalid", version)
+	}
+	m, err := ParseManifestFor(data[0], manifestArchOf(data[0]))
+	if err != nil {
+		return Manifest{}, nil, err
+	}
+	if m.Version != version {
+		return Manifest{}, nil, fmt.Errorf("kept manifest is %s, the slots run %s", m.Version, version)
+	}
+	return m, data, nil
 }
 
 func manifestArchOf(data []byte) string {

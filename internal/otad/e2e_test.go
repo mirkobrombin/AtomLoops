@@ -23,6 +23,11 @@ import (
 // the base URL and the ROOT public key. Same shape the daemon fetches in production.
 func signedFeedV2(t *testing.T, verityHash string) (string, []byte) {
 	t.Helper()
+	return signedFeedWith(t, verityHash, nil)
+}
+
+func signedFeedWith(t *testing.T, verityHash string, edit func(*Manifest)) (string, []byte) {
+	t.Helper()
 	rootfs := []byte("EROFS rootfs image v2")
 	kernel := []byte("UKI kernelcache v2")
 	h := func(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }
@@ -61,6 +66,9 @@ func signedFeedV2(t *testing.T, verityHash string) (string, []byte) {
 		KernelcacheSigURL:  srv.URL + "/kernelcache-sig",
 		KernelcacheSigHash: h(kernelSig),
 	}
+	if edit != nil {
+		edit(&m)
+	}
 	mData, _ := json.Marshal(m)
 	mSig := ed25519.Sign(signPriv, mData)
 	mux.HandleFunc("/manifest.json", func(w http.ResponseWriter, r *http.Request) { w.Write(mData) })
@@ -87,9 +95,10 @@ func bootedAs(t *testing.T, version, verityHash string) {
 	if err := os.WriteFile(p, []byte("console=ttyS0 ATOM_ROOT_HASH="+verityHash+" ATOM_VERSION="+version+" ro\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	old := bootedVersionPath
+	old, oldLive := bootedVersionPath, LiveIdentityPath
 	bootedVersionPath = p
-	t.Cleanup(func() { bootedVersionPath = old })
+	LiveIdentityPath = filepath.Join(t.TempDir(), "live-identity")
+	t.Cleanup(func() { bootedVersionPath, LiveIdentityPath = old, oldLive })
 }
 
 // TestOTACycleEndToEnd exercises the whole update: fetch+verify+stage a signed v2, then
