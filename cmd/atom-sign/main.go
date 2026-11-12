@@ -235,6 +235,8 @@ func run(args []string) int {
 		recoverySig := fs.String("recovery-sig", "", "recovery image signature file")
 		recoverySigURL := fs.String("recovery-sig-url", "", "URL the device will fetch the recovery signature from")
 		recoveryVersion := fs.Int("recovery-version", 0, "recovery image version")
+		applyClass := fs.String("apply-class", "", "how the OS applies this release (opaque to AtomLoops, e.g. a class name the OS defines)")
+		liveFrom := fs.String("live-from", "", "the one earlier release this one can be applied to without a reboot")
 		var families familyList
 		fs.Var(&families, "kernel-family", "repeatable board kernel spec (name=..,kc=..,url=..,sig=..,sig-url=..[,release=..])")
 		var bundles bundleList
@@ -285,6 +287,7 @@ func run(args []string) int {
 			RecoveryFile:    *recovery, RecoveryURL: *recoveryURL,
 			RecoverySigFile: *recoverySig, RecoverySigURL: *recoverySigURL,
 			KernelFamilies: families,
+			ApplyClass:     *applyClass, LiveFrom: *liveFrom,
 		}, fwSpec...)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "atom-sign:", err)

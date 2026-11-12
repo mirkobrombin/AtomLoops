@@ -145,6 +145,8 @@ type ReleaseSpec struct {
 	RecoverySigFile, RecoverySigURL string
 
 	KernelFamilies []KernelFamilySpec
+
+	ApplyClass, LiveFrom string
 }
 
 type KernelFamilySpec struct {
@@ -205,6 +207,15 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 		KernelcacheHash:    kh,
 		KernelcacheSigURL:  r.KernelcacheSigURL,
 		KernelcacheSigHash: ksh,
+	}
+	if r.ApplyClass != "" || r.LiveFrom != "" {
+		if !otad.ValidApplyClass(r.ApplyClass) {
+			return "", fmt.Errorf("manifest: apply class %q must be lowercase letters, digits and dashes", r.ApplyClass)
+		}
+		if r.LiveFrom != "" && !otad.OlderRelease(r.LiveFrom, r.Version) {
+			return "", fmt.Errorf("manifest: live-from %q must be an earlier release than %q", r.LiveFrom, r.Version)
+		}
+		m.Apply = &otad.ApplySpec{Class: r.ApplyClass, LiveFrom: r.LiveFrom}
 	}
 	for _, f := range r.KernelFamilies {
 		if !validFamilyName(f.Name) {

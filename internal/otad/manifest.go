@@ -95,6 +95,45 @@ type Manifest struct {
 	// Firmware* fields above (kept for back-compat and folded in as a "default" bundle
 	// by FirmwareBundleList).
 	FirmwareBundles []FirmwareBundleSpec `json:"firmware_bundles,omitempty"`
+
+	Apply *ApplySpec `json:"apply,omitempty"`
+}
+
+type ApplySpec struct {
+	Class    string `json:"class"`
+	LiveFrom string `json:"live_from,omitempty"`
+}
+
+func ValidApplyClass(class string) bool {
+	if class == "" || len(class) > 32 {
+		return false
+	}
+	for _, c := range class {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func (m Manifest) ApplyClass() string {
+	if m.Apply == nil {
+		return ""
+	}
+	return m.Apply.Class
+}
+
+func OlderRelease(a, b string) bool {
+	x, ok1 := versionNum(a)
+	y, ok2 := versionNum(b)
+	return ok1 && ok2 && x < y
+}
+
+func (m Manifest) LiveFrom(running string) bool {
+	if m.Apply == nil || m.Apply.LiveFrom == "" || running == "" {
+		return false
+	}
+	return sameRelease(m.Apply.LiveFrom, running)
 }
 
 // FirmwareBundleSpec describes one firmware add-on bundle in a manifest. Chips lists

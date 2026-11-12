@@ -218,3 +218,54 @@ func TestTwoTierTrustChain(t *testing.T) {
 		t.Error("v5 explicitly revoked should fail")
 	}
 }
+
+func TestBuildManifestCarriesTheApplyClass(t *testing.T) {
+	dir := t.TempDir()
+	rootfs := filepath.Join(dir, "rootfs.erofs")
+	kc := filepath.Join(dir, "kc.efi")
+	os.WriteFile(rootfs, []byte("EROFS"), 0o644)
+	os.WriteFile(kc, []byte("UKI"), 0o644)
+	out := filepath.Join(dir, "manifest.json")
+	spec := ReleaseSpec{
+		Version: "v318", MinVersion: "v1",
+		RootFSFile: rootfs, RootFSURL: "https://x/rootfs",
+		RootFSVerityHash:   "beef",
+		RootFSHashTreeFile: rootfs, RootFSHashTreeURL: "https://x/rootfs.hash",
+		KernelcacheFile: kc, KernelcacheURL: "https://x/kc",
+		KernelcacheSigFile: kc, KernelcacheSigURL: "https://x/kc.sig",
+	}
+	if _, err := BuildManifest(out, spec); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(out)
+	m, _ := otad.ParseManifest(b)
+	if m.Apply != nil || m.LiveFrom("v317") {
+		t.Fatalf("a release without an apply class must stay reboot only: %+v", m.Apply)
+	}
+
+	spec.ApplyClass, spec.LiveFrom = "reload", "v317"
+	if _, err := BuildManifest(out, spec); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(out)
+	m, err := otad.ParseManifest(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ApplyClass() != "reload" || !m.LiveFrom("v317") || !m.LiveFrom("317") || m.LiveFrom("v316") || m.LiveFrom("") {
+		t.Errorf("apply class not carried: %+v", m.Apply)
+	}
+
+	for _, bad := range []struct{ class, from string }{
+		{"Reload", "v317"}, {"re load", "v317"}, {"", "v317"}, {"reload", "v318"}, {"reload", "v319"},
+	} {
+		spec.ApplyClass, spec.LiveFrom = bad.class, bad.from
+		if _, err := BuildManifest(out, spec); err == nil {
+			t.Errorf("accepted apply class %q live from %q", bad.class, bad.from)
+		}
+	}
+	spec.ApplyClass, spec.LiveFrom = "reboot", ""
+	if _, err := BuildManifest(out, spec); err != nil {
+		t.Errorf("a class without live-from is valid: %v", err)
+	}
+}
