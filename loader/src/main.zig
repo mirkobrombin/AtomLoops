@@ -90,6 +90,10 @@ fn renderSurface(root: *File) void {
     const width: usize = info.horizontal_resolution;
     const height: usize = info.vertical_resolution;
     const stride: usize = info.pixels_per_scan_line;
+    if (info.pixel_format == .blt_only or mode.frame_buffer_base == 0) {
+        renderSurfaceBlt(g, root, width, height);
+        return;
+    }
     const fb: [*]volatile u32 = @ptrFromInt(mode.frame_buffer_base);
 
     const backdrop: u32 = 0x00000000; // black, no backdrop
@@ -108,6 +112,35 @@ fn renderSurface(root: *File) void {
         defer uefi.pool_allocator.free(notice);
         _ = blitAsset(fb, stride, width, height, notice, below);
     }
+}
+
+fn renderSurfaceBlt(g: *uefi.protocol.GraphicsOutput, root: *File, width: usize, height: usize) void {
+    const GraphicsOutput = uefi.protocol.GraphicsOutput;
+    var black = [_]GraphicsOutput.BltPixel{.{ .blue = 0, .green = 0, .red = 0, .reserved = 0 }};
+    g.blt(&black, .blt_video_fill, 0, 0, 0, 0, width, height, 0) catch return;
+    var below: usize = height * 62 / 100;
+    if (readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\surface.bin"))) |asset| {
+        defer uefi.pool_allocator.free(asset);
+        if (bltAsset(g, width, height, asset, null)) |bottom| below = bottom;
+    }
+    if (readFile(root, std.unicode.utf8ToUtf16LeStringLiteral("\\EFI\\atom\\notice.bin"))) |notice| {
+        defer uefi.pool_allocator.free(notice);
+        _ = bltAsset(g, width, height, notice, below);
+    }
+}
+
+fn bltAsset(g: *uefi.protocol.GraphicsOutput, width: usize, height: usize, asset: []u8, top: ?usize) ?usize {
+    if (asset.len < 8) return null;
+    const lw: usize = std.mem.readInt(u32, asset[0..][0..4], .little);
+    const lh: usize = std.mem.readInt(u32, asset[4..][0..4], .little);
+    if (lw == 0 or lh == 0 or lw > width or lh > height) return null;
+    if (asset.len < 8 + lw * lh * 4) return null;
+    const ox = (width - lw) / 2;
+    const oy = top orelse (height - lh) / 2;
+    if (oy + lh > height) return null;
+    const pixels: [*]uefi.protocol.GraphicsOutput.BltPixel = @ptrCast(@alignCast(asset.ptr + 8));
+    g.blt(pixels, .blt_buffer_to_video, 0, 0, ox, oy, lw, lh, lw * 4) catch return null;
+    return oy + lh;
 }
 
 fn blitAsset(fb: [*]volatile u32, stride: usize, width: usize, height: usize, asset: []const u8, top: ?usize) ?usize {
