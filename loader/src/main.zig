@@ -263,7 +263,7 @@ fn readFile(root: *File, path: [*:0]const u16) ?[]u8 {
     f.setPosition(0xFFFF_FFFF_FFFF_FFFF) catch return null;
     const size = f.getPosition() catch return null;
     f.setPosition(0) catch return null;
-    const buf = uefi.pool_allocator.alloc(u8, size) catch return null;
+    const buf = uefi.pool_allocator.alignedAlloc(u8, .fromByteUnits(4096), size) catch return null;
     var total: usize = 0;
     while (total < buf.len) {
         const n = f.read(buf[total..]) catch return null;
