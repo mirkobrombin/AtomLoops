@@ -65,6 +65,23 @@ func LoaderVersionOf(image []byte) int {
 	return v
 }
 
+// LoaderArchOf is the architecture an EFI image is built for, in the names
+// manifests use, or "" when the image is not a PE for a known machine.
+func LoaderArchOf(image []byte) string {
+	f, err := pe.NewFile(bytes.NewReader(image))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	switch f.Machine {
+	case pe.IMAGE_FILE_MACHINE_AMD64:
+		return "x86_64"
+	case pe.IMAGE_FILE_MACHINE_ARM64:
+		return "aarch64"
+	}
+	return ""
+}
+
 func InstalledLoaderVersion(dirs StageDirs) int {
 	b, err := os.ReadFile(loaderBootPath(dirs))
 	if err != nil {
@@ -161,6 +178,10 @@ func StageLoader(ctx context.Context, walPath, manifestURL, revocationURL string
 		os.Remove(kPath)
 		return "", fmt.Errorf("loader: image reports version %d, manifest says %d", got, m.LoaderVersion)
 	}
+	if got, want := fileLoaderArch(kPath), Arch(runtime.GOARCH); got != want {
+		os.Remove(kPath)
+		return "", fmt.Errorf("loader: image is built for %q, this machine is %s", got, want)
+	}
 	sPath := kPath + ".sig"
 	if _, err := FetchTo(ctx, m.LoaderSigURL, sPath); err != nil {
 		os.Remove(kPath)
@@ -210,6 +231,14 @@ func fileLoaderVersion(path string) int {
 		return 0
 	}
 	return LoaderVersionOf(b)
+}
+
+func fileLoaderArch(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return LoaderArchOf(b)
 }
 
 func installLoaderImage(dirs StageDirs, image string) error {

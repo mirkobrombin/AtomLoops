@@ -5,13 +5,16 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"debug/pe"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -71,7 +74,29 @@ func newLoaderFeed(t *testing.T, version int, image []byte, imageSig []byte) loa
 }
 
 func loaderImage(version string) []byte {
-	return []byte("MZ fake loader body " + loaderMarker + version + "; tail")
+	machine := uint16(pe.IMAGE_FILE_MACHINE_AMD64)
+	if Arch(runtime.GOARCH) == "aarch64" {
+		machine = pe.IMAGE_FILE_MACHINE_ARM64
+	}
+	return peLoader(machine, version)
+}
+
+func foreignLoaderImage(version string) []byte {
+	machine := uint16(pe.IMAGE_FILE_MACHINE_ARM64)
+	if Arch(runtime.GOARCH) == "aarch64" {
+		machine = pe.IMAGE_FILE_MACHINE_AMD64
+	}
+	return peLoader(machine, version)
+}
+
+func peLoader(machine uint16, version string) []byte {
+	img := make([]byte, 0x40)
+	copy(img, "MZ")
+	binary.LittleEndian.PutUint32(img[0x3c:], 0x40)
+	img = append(img, 'P', 'E', 0, 0)
+	img = binary.LittleEndian.AppendUint16(img, machine)
+	img = append(img, make([]byte, 18)...)
+	return append(img, []byte("fake loader body "+loaderMarker+version+"; tail")...)
 }
 
 func loaderDirs(t *testing.T, installed []byte) StageDirs {
@@ -104,6 +129,18 @@ func TestLoaderVersionOf(t *testing.T) {
 	}
 	if v := LoaderVersionOf(loaderImage("7")); v != 7 {
 		t.Errorf("marked loader = %d, want 7", v)
+	}
+}
+
+func TestLoaderArchOf(t *testing.T) {
+	if a := LoaderArchOf(peLoader(pe.IMAGE_FILE_MACHINE_AMD64, "2")); a != "x86_64" {
+		t.Fatalf("amd64 image = %q", a)
+	}
+	if a := LoaderArchOf(peLoader(pe.IMAGE_FILE_MACHINE_ARM64, "2")); a != "aarch64" {
+		t.Fatalf("arm64 image = %q", a)
+	}
+	if a := LoaderArchOf([]byte("MZ not a pe")); a != "" {
+		t.Fatalf("broken image = %q", a)
 	}
 }
 
@@ -240,6 +277,17 @@ func TestLoaderRefusals(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(dirs.ESP, "kernelcache-next.efi")); err == nil {
 			t.Fatal("unsigned image left in the trial slot")
+		}
+	})
+	t.Run("other architecture", func(t *testing.T) {
+		feed := newLoaderFeed(t, 2, foreignLoaderImage("2"), nil)
+		dirs := loaderDirs(t, []byte("MZ old"))
+		_, err := StageLoader(context.Background(), e2eWAL(t), feed.base+"/manifest.json", "", feed.rootPub, dirs, false)
+		if err == nil || !strings.Contains(err.Error(), "built for") {
+			t.Fatalf("loader for another architecture: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dirs.ESP, "kernelcache-next.efi")); err == nil {
+			t.Fatal("foreign image left in the trial slot")
 		}
 	})
 	t.Run("already installed", func(t *testing.T) {

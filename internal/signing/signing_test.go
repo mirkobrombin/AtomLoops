@@ -1,6 +1,8 @@
 package signing
 
 import (
+	"debug/pe"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -267,5 +269,49 @@ func TestBuildManifestCarriesTheApplyClass(t *testing.T) {
 	spec.ApplyClass, spec.LiveFrom = "reboot", ""
 	if _, err := BuildManifest(out, spec); err != nil {
 		t.Errorf("a class without live-from is valid: %v", err)
+	}
+}
+
+func TestBuildManifestRefusesALoaderForAnotherArch(t *testing.T) {
+	dir := t.TempDir()
+	write := func(n string, b []byte) string {
+		p := filepath.Join(dir, n)
+		os.WriteFile(p, b, 0o644)
+		return p
+	}
+	loader := func(machine uint16) []byte {
+		img := make([]byte, 0x40)
+		copy(img, "MZ")
+		binary.LittleEndian.PutUint32(img[0x3c:], 0x40)
+		img = append(img, 'P', 'E', 0, 0)
+		img = binary.LittleEndian.AppendUint16(img, machine)
+		img = append(img, make([]byte, 18)...)
+		return append(img, "ATOM-LOADER-VERSION=4;"...)
+	}
+	rootfs, kc := write("rootfs.erofs", []byte("EROFS")), write("kc.efi", []byte("UKI"))
+	x86, arm := write("x86.efi", loader(pe.IMAGE_FILE_MACHINE_AMD64)), write("arm.efi", loader(pe.IMAGE_FILE_MACHINE_ARM64))
+	sig := write("loader.sig", []byte("SIG"))
+	out := filepath.Join(dir, "manifest.json")
+	for _, c := range []struct {
+		arch, loader string
+		ok           bool
+	}{
+		{"aarch64", arm, true},
+		{"aarch64", x86, false},
+		{"x86_64", x86, true},
+		{"x86_64", arm, false},
+		{"", arm, false},
+	} {
+		spec := ReleaseSpec{
+			Version: "v3", MinVersion: "v1", Arch: c.arch,
+			RootFSFile: rootfs, RootFSURL: "https://x/rootfs", RootFSVerityHash: "ab",
+			RootFSHashTreeFile: rootfs, RootFSHashTreeURL: "https://x/rootfs.hash",
+			KernelcacheFile: kc, KernelcacheURL: "https://x/kc", KernelcacheSigFile: kc, KernelcacheSigURL: "https://x/kc.sig",
+			LoaderFile: c.loader, LoaderURL: "https://x/loader.efi", LoaderSigFile: sig, LoaderSigURL: "https://x/loader.efi.sig",
+		}
+		_, err := BuildManifest(out, spec)
+		if (err == nil) != c.ok {
+			t.Errorf("arch %q loader %s: %v", c.arch, filepath.Base(c.loader), err)
+		}
 	}
 }

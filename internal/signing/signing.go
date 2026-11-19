@@ -253,6 +253,9 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 		if v < 2 {
 			return "", fmt.Errorf("manifest: boot loader carries no version marker")
 		}
+		if got, want := otad.LoaderArchOf(img), otad.ManifestArch(r.Arch); got != want {
+			return "", fmt.Errorf("manifest: boot loader is built for %q, the release for %s", got, want)
+		}
 		lh, err := hashFile(r.LoaderFile)
 		if err != nil {
 			return "", fmt.Errorf("hash boot loader: %w", err)
