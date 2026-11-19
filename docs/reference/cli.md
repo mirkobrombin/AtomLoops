@@ -25,6 +25,9 @@ cd loader && sh build.sh   # BOOTX64.EFI (needs Zig 0.16)
 It writes the boot-state crash-durably and never switches the running system out
 from under itself on its own. A staged release that allows it can be applied
 without a reboot with `updated apply-live`; see [Live apply](../concepts/live.md).
+On a device without a loader, `updated sync-kernel` installs the booted release's
+kernelcache through the system's kernel hooks; see
+[Devices without a loader](../concepts/boot.md#devices-without-a-loader).
 See [Components](../architecture/components.md) and
 [The deployment WAL](../architecture/wal.md).
 

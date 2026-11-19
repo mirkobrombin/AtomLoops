@@ -34,6 +34,31 @@ chain falls back to the last good image, or drops into recovery if there is no
 good image to return to. This is what makes a bad update self-healing: no human
 has to intervene to get a working system back.
 
+## Devices without a loader
+
+Some devices cannot run the UEFI loader: a phone's bootloader, for one, boots the
+kernel from its own boot partitions and never reads the ESP. There the initramfs
+plays the loader's part. It reads the boot-state and the write-ahead log, picks the
+candidate while its trial budget lasts and the installed release otherwise, and
+takes the root hash from that release's signed manifest kept beside the slots
+(`sing.roothash=anchor` on the command line). The release it chose is recorded in
+`/run/atomloops/boot-identity`.
+
+The kernel has to follow the root, so the system installs the kernelcache where
+its bootloader finds it through executables in `/usr/lib/atomloops/kernel.d`.
+Each runs with the phase as its argument, with `ATOM_KERNELCACHE` naming the
+verified kernelcache, `ATOM_KERNELCACHE_HASH` its SHA256 from the signed manifest,
+and `ATOM_VERSION` its release:
+
+| Phase | When | What the hook does |
+|---|---|---|
+| `staged` | a candidate is verified on disk, before it is marked pending | installs the candidate's kernelcache; a failure refuses the candidate |
+| `booted` | `updated sync-kernel`, early in every boot | installs the booted release's kernelcache if another one is in place, as after a candidate that failed its trial, and restarts the device |
+
+A candidate that fails its trial brings back the installed root with the
+candidate's kernel; the `booted` phase puts that release's own kernel back and
+restarts, so the device returns to a matching pair on its own.
+
 ## dm-verity
 
 The target root is set up under dm-verity before `switch_root`, so the running

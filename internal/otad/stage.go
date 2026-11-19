@@ -204,6 +204,13 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 		}
 	}
 
+	// 3c. A device whose bootloader reads the kernel from its own partitions
+	// gets the candidate's kernelcache installed there before the candidate is
+	// marked, so the trial boot never pairs the new root with the old kernel.
+	if err := runKernelHooks("staged", kPath, m.KernelcacheHash, m.Version); err != nil {
+		return "", err
+	}
+
 	// 4. Only now, everything verified on disk: mark the candidate pending.
 	d, err := deployment.Load(walPath)
 	if err != nil {

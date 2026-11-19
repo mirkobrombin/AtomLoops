@@ -171,6 +171,15 @@ func main() {
 			fmt.Fprintf(os.Stderr, "updated: fetch-release: %v\n", err)
 			os.Exit(1)
 		}
+	case "sync-kernel":
+		fs := flag.NewFlagSet("sync-kernel", flag.ExitOnError)
+		rootfsDir := fs.String("rootfs-dir", "/boot/rootfs", "rootfs slot dir")
+		espDir := fs.String("esp-dir", "/boot/efi/EFI/atom", "ESP kernelcache slot dir")
+		fs.Parse(os.Args[2:])
+		if err := otad.SyncBootedKernel(*rootfsDir, *espDir, rootPub); err != nil {
+			fmt.Fprintf(os.Stderr, "updated: sync-kernel: %v\n", err)
+			os.Exit(1)
+		}
 	case "apply-live":
 		os.Exit(applyLiveCommand(os.Args[2:]))
 	case "version":
