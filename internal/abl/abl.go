@@ -1,5 +1,6 @@
-// Package abl keeps the A/B slot state a Qualcomm bootloader reads from the
-// GPT attributes of the boot partitions.
+// Package abl keeps the A/B slot state a bootloader reads from the disk: the
+// GPT attributes of the boot partitions on Qualcomm, the devinfo partition on
+// Google Tensor.
 package abl
 
 import (
@@ -161,6 +162,10 @@ func MarkSuccessful(dev interface {
 // its active slot successful. A machine without them is left alone.
 func MarkBootedSlot(sysBlock, devDir string) (string, error) {
 	compat, _ := os.ReadFile("/proc/device-tree/compatible")
+	// DEVICE-FIX(gs201): the Pixel bootloader keeps its A/B retry state in the devinfo partition and abandons a slot no booted system marks successful
+	if bytes.Contains(compat, []byte("google,gs201")) {
+		return markDevinfoSlot(sysBlock, devDir, "/proc/bootconfig")
+	}
 	// DEVICE-FIX(msm): Qualcomm's bootloader counts down a retry budget in the boot partitions' GPT attributes and refuses the slot once it runs out unless the booted system marks it successful
 	if !bytes.Contains(compat, []byte("qcom,")) {
 		return "", nil
