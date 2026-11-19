@@ -196,16 +196,47 @@ func dmCall(nr uintptr, name string, flags uint32, payload []byte, targets uint3
 }
 
 func verityTarget(sectors uint64, params string) []byte {
+	return dmTarget(0, sectors, "verity", params)
+}
+
+func dmTarget(start, sectors uint64, kind, params string) []byte {
 	plen := len(params) + 1
 	total := dmTargetSpecLen + (plen+7)&^7
 	buf := make([]byte, total)
 	le := binary.LittleEndian
-	le.PutUint64(buf[0:], 0)
+	le.PutUint64(buf[0:], start)
 	le.PutUint64(buf[8:], sectors)
 	le.PutUint32(buf[20:], uint32(total))
-	copy(buf[24:40], "verity")
+	copy(buf[24:40], kind)
 	copy(buf[dmTargetSpecLen:], params)
 	return buf
+}
+
+// Segment is one run of sectors of a device, in 512-byte sectors.
+type Segment struct {
+	Dev     string
+	Start   uint64
+	Sectors uint64
+}
+
+// OpenLinear maps the segments, in order, as one read-only device under
+// /dev/mapper/name: how a partition stored in pieces of a larger one, such as
+// an Android logical partition in super, is read as a block device.
+func OpenLinear(name string, segs []Segment) (string, error) {
+	if len(segs) == 0 {
+		return "", errors.New("no segment to map")
+	}
+	var table []byte
+	at := uint64(0)
+	for _, s := range segs {
+		dev, err := devNumber(s.Dev)
+		if err != nil {
+			return "", err
+		}
+		table = append(table, dmTarget(at, s.Sectors, "linear", fmt.Sprintf("%s %d", dev, s.Start))...)
+		at += s.Sectors
+	}
+	return openMapping(name, table, uint32(len(segs)))
 }
 
 // OpenVerity maps dataDev through dm-verity under /dev/mapper/name, checked
@@ -229,12 +260,15 @@ func OpenVerity(name, dataDev, hashDev, rootHash string) (string, error) {
 		return "", err
 	}
 	sectors := sb.DataBlocks * uint64(sb.DataBlockSize) / 512
-	table := VerityTable(sb, data, hash, rootHash)
+	return openMapping(name, verityTarget(sectors, VerityTable(sb, data, hash, rootHash)), 1)
+}
+
+func openMapping(name string, table []byte, targets uint32) (string, error) {
 	created, err := dmCall(dmDevCreate, name, dmReadOnlyFlag, nil, 0)
 	if err != nil {
 		return "", fmt.Errorf("create %s: %w", name, err)
 	}
-	if _, err := dmCall(dmTableLoad, name, dmReadOnlyFlag, verityTarget(sectors, table), 1); err != nil {
+	if _, err := dmCall(dmTableLoad, name, dmReadOnlyFlag, table, targets); err != nil {
 		dmCall(dmDevRemove, name, 0, nil, 0)
 		return "", fmt.Errorf("load %s: %w", name, err)
 	}
@@ -246,7 +280,7 @@ func OpenVerity(name, dataDev, hashDev, rootHash string) (string, error) {
 	os.MkdirAll("/dev/mapper", 0755)
 	os.Remove(node)
 	if err := syscall.Mknod(node, syscall.S_IFBLK|0600, int(created.dev)); err != nil {
-		CloseVerity(name)
+		CloseMapping(name)
 		return "", fmt.Errorf("node %s: %w", node, err)
 	}
 	return node, nil
@@ -254,7 +288,11 @@ func OpenVerity(name, dataDev, hashDev, rootHash string) (string, error) {
 
 // CloseVerity removes a mapping made by OpenVerity. Closing a mapping that
 // does not exist is not an error.
-func CloseVerity(name string) error {
+func CloseVerity(name string) error { return CloseMapping(name) }
+
+// CloseMapping removes a mapping made by OpenVerity or OpenLinear. Closing a
+// mapping that does not exist is not an error.
+func CloseMapping(name string) error {
 	os.Remove(filepath.Join("/dev/mapper", name))
 	var err error
 	for i := 0; i < 40; i++ {
