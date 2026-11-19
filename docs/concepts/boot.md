@@ -53,7 +53,7 @@ and `ATOM_VERSION` its release:
 | Phase | When | What the hook does |
 |---|---|---|
 | `staged` | a candidate is verified on disk, before it is marked pending | installs the candidate's kernelcache; a failure refuses the candidate |
-| `booted` | `updated sync-kernel`, early in every boot | installs the booted release's kernelcache if another one is in place, as after a candidate that failed its trial, and restarts the device |
+| `booted` | `updated sync-kernel` (`updated-sync-kernel.service`), early in every boot | installs the booted release's kernelcache if another one is in place, as after a candidate that failed its trial, and restarts the device |
 
 A candidate that fails its trial brings back the installed root with the
 candidate's kernel; the `booted` phase puts that release's own kernel back and

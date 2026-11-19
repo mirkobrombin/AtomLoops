@@ -1,0 +1,13 @@
+[Unit]
+Description=Atom Loops kernel follows the booted root on devices without a loader
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/updated sync-kernel
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
