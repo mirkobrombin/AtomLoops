@@ -37,6 +37,10 @@ type Config struct {
 	// medium are mounted while the root is found.
 	DataMount string
 	ISOMount  string
+	// DataPart restricts the data partition to the partition of that name,
+	// and makes every other partition and disk read-only before any is
+	// mounted.
+	DataPart string
 	// AnchorKey turns on an anchor boot: the command line names no root
 	// hash, and the root comes from the release-signed manifest kept on the
 	// data partition, verified against this root public key.
@@ -84,6 +88,7 @@ type Ops struct {
 	FSType       func(dev string) string
 	DiskOf       func(dev string) string
 	BootPartUUID func() string
+	Guard        func(keep string) (int, error)
 	Sleep        func(time.Duration)
 }
 
@@ -134,6 +139,7 @@ func SystemOps() Ops {
 		},
 		FSType:       FSType,
 		DiskOf:       DiskOf,
+		Guard:        GuardDisks,
 		BootPartUUID: LoaderPartUUID,
 		Sleep:        time.Sleep,
 	}
@@ -156,6 +162,10 @@ type Media struct {
 	// BootWaits counts the scans that found no partition matching the one
 	// the loader started from.
 	BootWaits int
+	// GuardSeen and GuardStable track the block devices the disk guard saw,
+	// so the data partition is mounted only once the device list settles.
+	GuardSeen   int
+	GuardStable int
 	// Anchor is the release an anchor boot chose.
 	Anchor otad.AnchorChoice
 }
@@ -163,6 +173,10 @@ type Media struct {
 // bootDiskWaits bounds how many scans wait for the loader's own disk to
 // appear before any other disk may provide the data partition.
 const bootDiskWaits = 25
+
+// guardSettle is how many scans in a row must see the same block devices
+// before the guarded data partition is mounted.
+const guardSettle = 3
 
 func hasPartUUID(parts []Partition, id string) bool {
 	for _, p := range parts {
@@ -189,7 +203,32 @@ func (m *Media) FindData(cfg *Config, ops Ops) {
 		return
 	}
 	m.Unmountable, m.Empty = nil, nil
+	if cfg.DataPart != "" && ops.Guard != nil {
+		seen, err := ops.Guard(cfg.DataPart)
+		if err != nil {
+			Logf("disk guard: %v", err)
+			m.GuardStable = 0
+			return
+		}
+		if seen != m.GuardSeen {
+			m.GuardSeen, m.GuardStable = seen, 0
+			return
+		}
+		if m.GuardStable++; m.GuardStable < guardSettle {
+			return
+		}
+		Logf("disk guard: %d block devices, only %s writable", seen, cfg.DataPart)
+	}
 	parts := ops.Partitions()
+	if cfg.DataPart != "" {
+		kept := parts[:0:0]
+		for _, p := range parts {
+			if p.PartName == cfg.DataPart {
+				kept = append(kept, p)
+			}
+		}
+		parts = kept
+	}
 	if ops.BootPartUUID != nil {
 		if id := ops.BootPartUUID(); id != "" {
 			if !hasPartUUID(parts, id) && m.BootWaits < bootDiskWaits {
