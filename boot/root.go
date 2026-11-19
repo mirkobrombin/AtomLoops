@@ -89,6 +89,7 @@ type Ops struct {
 	DiskOf       func(dev string) string
 	BootPartUUID func() string
 	Guard        func(keep string) (int, error)
+	GrowData     func(dev string) error
 	Sleep        func(time.Duration)
 }
 
@@ -140,6 +141,7 @@ func SystemOps() Ops {
 		FSType:       FSType,
 		DiskOf:       DiskOf,
 		Guard:        GuardDisks,
+		GrowData:     GrowData,
 		BootPartUUID: LoaderPartUUID,
 		Sleep:        time.Sleep,
 	}
@@ -166,6 +168,8 @@ type Media struct {
 	// so the data partition is mounted only once the device list settles.
 	GuardSeen   int
 	GuardStable int
+	// Grown records that the named data partition was checked for growing.
+	Grown bool
 	// Anchor is the release an anchor boot chose.
 	Anchor otad.AnchorChoice
 }
@@ -228,6 +232,12 @@ func (m *Media) FindData(cfg *Config, ops Ops) {
 			}
 		}
 		parts = kept
+		if len(parts) == 1 && ops.GrowData != nil && !m.Grown {
+			m.Grown = true
+			if err := ops.GrowData(parts[0].Dev); err != nil {
+				Logf("%v", err)
+			}
+		}
 	}
 	if ops.BootPartUUID != nil {
 		if id := ops.BootPartUUID(); id != "" {

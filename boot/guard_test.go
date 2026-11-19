@@ -75,3 +75,21 @@ func TestGuardRestartsWhenNewDisksAppear(t *testing.T) {
 		t.Fatalf("mounted after %d scans, before the device list settled", i)
 	}
 }
+
+func TestTheDataPartGrowsOnceBeforeMounting(t *testing.T) {
+	f := phone()
+	ops := f.ops()
+	ops.Guard = func(string) (int, error) { return 3, nil }
+	var grown []string
+	ops.GrowData = func(dev string) error {
+		grown = append(grown, dev)
+		return nil
+	}
+	var m Media
+	if _, err := SelectRoot(Config{RootHash: goodHash, DataPart: "userdata"}, &m, ops); err != nil {
+		t.Fatal(err)
+	}
+	if len(grown) != 1 || grown[0] != "/dev/sda31" {
+		t.Fatalf("grew %v", grown)
+	}
+}
