@@ -93,3 +93,26 @@ func TestTheDataPartGrowsOnceBeforeMounting(t *testing.T) {
 		t.Fatalf("grew %v", grown)
 	}
 }
+
+func TestAFlashedBoardGrowsOnlyItsDataPartition(t *testing.T) {
+	f := phone()
+	f.parts = []Partition{
+		{Dev: "/dev/mmcblk0p67", Disk: "mmcblk0", PartName: "efi"},
+		{Dev: "/dev/mmcblk0p68", Disk: "mmcblk0", PartName: "atom-data"},
+		{Dev: "/dev/sda1", Disk: "sda", PartName: "atom-data-other"},
+	}
+	f.files["/dev/mmcblk0p68:data"] = true
+	ops := f.ops()
+	var grown []string
+	ops.GrowData = func(dev string) error {
+		grown = append(grown, dev)
+		return nil
+	}
+	var m Media
+	if _, err := SelectRoot(Config{RootHash: goodHash}, &m, ops); err != nil {
+		t.Fatal(err)
+	}
+	if len(grown) != 1 || grown[0] != "/dev/mmcblk0p68" {
+		t.Fatalf("grew %v", grown)
+	}
+}

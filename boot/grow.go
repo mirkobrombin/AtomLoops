@@ -34,9 +34,12 @@ func F2FSBytes(r io.ReaderAt) uint64 {
 	return le.Uint64(sb[36:]) << logBlock
 }
 
-// GrowData grows the f2fs filesystem on dev to the whole partition. A phone's
-// data image is flashed at the size of its contents, far smaller than the
-// partition, and grows here on its first boot.
+// DataPartName is the partition name the installer gives the data partition.
+const DataPartName = "atom-data"
+
+// GrowData grows the f2fs filesystem on dev to the whole partition. A data
+// image flashed to a phone or a board is the size of its contents, far
+// smaller than the partition, and grows here on its first boot.
 func GrowData(dev string) error {
 	f, err := os.Open(dev)
 	if err != nil {

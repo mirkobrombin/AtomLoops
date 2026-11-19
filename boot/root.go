@@ -232,10 +232,14 @@ func (m *Media) FindData(cfg *Config, ops Ops) {
 			}
 		}
 		parts = kept
-		if len(parts) == 1 && ops.GrowData != nil && !m.Grown {
-			m.Grown = true
-			if err := ops.GrowData(parts[0].Dev); err != nil {
-				Logf("%v", err)
+	}
+	if ops.GrowData != nil && !m.Grown {
+		m.Grown = true
+		for _, p := range parts {
+			if p.PartName == cfg.DataPart || (cfg.DataPart == "" && p.PartName == DataPartName) {
+				if err := ops.GrowData(p.Dev); err != nil {
+					Logf("%v", err)
+				}
 			}
 		}
 	}
