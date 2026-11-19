@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mirkobrombin/atomloops/internal/abl"
 	"github.com/mirkobrombin/atomloops/internal/audit"
 	"github.com/mirkobrombin/atomloops/internal/otad"
 	"github.com/mirkobrombin/atomloops/internal/recovery"
@@ -65,6 +66,7 @@ func runDaemon(wal, healthDir string, store otad.CounterStore, auditPath, manife
 		fmt.Println(msg)
 		audit.Append(auditPath, "boot-success", msg, time.Now)
 		emitBootRecord(sealedlog.OtaHealthy)
+		markBootSlot()
 	}
 
 	sched := scheduler.New(scheduler.WithLogger(func(m string) { fmt.Println("atomd:", m) }))
@@ -221,6 +223,8 @@ func run(args []string) int {
 		code := sealedlog.OtaHealthy
 		if err != nil {
 			code = sealedlog.CodeFail
+		} else {
+			markBootSlot()
 		}
 		emitBootRecord(code)
 		return report(msg, err)
@@ -294,4 +298,15 @@ func report(msg string, err error) int {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: atomd <init|run|recover|stage|boot-success|firmware-confirm|status|deploy|rollback|version> [flags]")
+}
+
+// markBootSlot tells a bootloader that keeps A/B slot state on the disk that
+// the slot it started booted, once the system is confirmed good.
+func markBootSlot() {
+	msg, err := abl.MarkBootedSlot("/sys/block", "/dev")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "atomd: boot slot:", err)
+	} else if msg != "" {
+		fmt.Println("atomd:", msg)
+	}
 }
