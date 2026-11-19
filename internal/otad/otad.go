@@ -63,6 +63,9 @@ func SetBootedCmdlinePath(p string) (restore func()) {
 func bootedIdentity() bootIdentity {
 	b, err := os.ReadFile(LiveIdentityPath)
 	if err != nil {
+		b, err = os.ReadFile(BootIdentityPath)
+	}
+	if err != nil {
 		b, err = os.ReadFile(bootedVersionPath)
 	}
 	if err != nil {

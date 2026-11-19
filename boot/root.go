@@ -2,13 +2,20 @@ package boot
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mirkobrombin/atomloops/internal/otad"
 )
+
+// AnchorESP is where an anchor boot finds the boot-state the daemon writes, on
+// a device with no ESP: the default ESP slot dir, under the data partition.
+const AnchorESP = "/boot/efi/EFI/atom"
 
 // Config describes how a boot finds its root.
 type Config struct {
@@ -30,6 +37,10 @@ type Config struct {
 	// medium are mounted while the root is found.
 	DataMount string
 	ISOMount  string
+	// AnchorKey turns on an anchor boot: the command line names no root
+	// hash, and the root comes from the release-signed manifest kept on the
+	// data partition, verified against this root public key.
+	AnchorKey []byte
 	// Attempts and Interval bound the wait for slow boot media.
 	Attempts int
 	Interval time.Duration
@@ -145,6 +156,8 @@ type Media struct {
 	// BootWaits counts the scans that found no partition matching the one
 	// the loader started from.
 	BootWaits int
+	// Anchor is the release an anchor boot chose.
+	Anchor otad.AnchorChoice
 }
 
 // bootDiskWaits bounds how many scans wait for the loader's own disk to
@@ -297,17 +310,34 @@ const unmountableTries = 3
 // the hash selects, or of the raw root when no slot matches.
 func SelectRoot(cfg Config, m *Media, ops Ops) (*Root, error) {
 	cfg.defaults()
-	if !ValidRootHash(cfg.RootHash) {
+	anchor := len(cfg.AnchorKey) > 0
+	if !anchor && !ValidRootHash(cfg.RootHash) {
 		return nil, errors.New("no valid root hash on the kernel command line")
 	}
 	refused := 0
 	for i := 0; i < cfg.Attempts; i++ {
 		m.FindData(&cfg, ops)
-		m.FindISO(&cfg, ops)
+		if anchor && cfg.RootHash == "" && m.DataDev != "" {
+			choice, err := otad.ChooseAnchorRoot(cfg.DataMount+"/boot/rootfs/deployment.json", cfg.DataMount+"/boot/rootfs", cfg.DataMount+AnchorESP, cfg.AnchorKey)
+			if err != nil {
+				return nil, fmt.Errorf("anchor boot: %w", err)
+			}
+			if !ValidRootHash(choice.Manifest.RootFSVerityHash) {
+				return nil, errors.New("anchor boot: the release names no valid root hash")
+			}
+			m.Anchor = choice
+			cfg.RootHash = choice.Manifest.RootFSVerityHash
+			Logf("anchor boot: release %s (trial %v)", choice.Manifest.Version, choice.Trial)
+		}
 		var root *Root
-		if cfg.Unlocked {
+		if !anchor {
+			m.FindISO(&cfg, ops)
+		}
+		switch {
+		case cfg.RootHash == "":
+		case cfg.Unlocked:
 			root = selectUnlocked(&cfg, m, ops)
-		} else {
+		default:
 			root = selectVerified(&cfg, m, ops)
 		}
 		if root != nil {
