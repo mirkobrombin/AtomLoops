@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/mirkobrombin/atomloops/internal/sealedlog"
+	"github.com/mirkobrombin/atomloops/internal/syncfs"
 )
 
 const (
@@ -134,8 +135,6 @@ func publishPub(state, espDir string, pub []byte) error {
 	return writeAtomic(dst, pub)
 }
 
-const sysSyncfs = 306
-
 func writeAtomic(path string, b []byte) error {
 	tmp := path + ".new"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
@@ -161,8 +160,8 @@ func writeAtomic(path string, b []byte) error {
 		return err
 	}
 	defer d.Close()
-	if _, _, errno := syscall.Syscall(sysSyncfs, d.Fd(), 0, 0); errno != 0 {
-		return errno
+	if err := syncfs.File(d); err != nil {
+		return err
 	}
 	return nil
 }

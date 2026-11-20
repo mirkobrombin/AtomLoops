@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/mirkobrombin/atomloops/internal/deployment"
+	"github.com/mirkobrombin/atomloops/internal/syncfs"
 )
 
 // SyncBootState writes the ESP boot-state to match the WAL: a pending candidate
@@ -183,17 +184,10 @@ func syncDir(dir string) error {
 		!errors.Is(err, syscall.ENOTSUP) {
 		return err
 	}
-	return syncFS(d)
-}
-
-// syncFS writes back every inode of the filesystem holding f. On FAT a renamed
-// file keeps a zero size in its new directory entry until its inode is written
-// back, which neither the file nor the directory fsync before the rename does.
-func syncFS(f *os.File) error {
-	if _, _, errno := syscall.Syscall(sysSyncfs, f.Fd(), 0, 0); errno != 0 {
-		return errno
-	}
-	return nil
+	// On FAT a renamed file keeps a zero size in its new directory entry until its
+	// inode is written back, which neither the file nor the directory fsync before
+	// the rename does.
+	return syncfs.File(d)
 }
 
 func copyFileSync(src, dst string) error {
