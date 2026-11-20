@@ -262,7 +262,7 @@ func preflightSlots(groups []slotGroup) error {
 			next := filepath.Join(g.dir, g.prefix+"-next"+s)
 			active := filepath.Join(g.dir, g.prefix+"-active"+s)
 			if nonEmpty(next) {
-				if !nonEmpty(active) {
+				if !nonEmpty(active) && nonEmpty(filepath.Join(g.dir, g.prefix+"-prev"+s)) {
 					return fmt.Errorf("promote: %s%s has no active slot", g.prefix, s)
 				}
 				continue
@@ -315,6 +315,9 @@ func PromoteSlots(dirs StageDirs) error {
 			for _, s := range moving {
 				src := filepath.Join(g.dir, g.prefix+from+s)
 				dst := filepath.Join(g.dir, g.prefix+to+s)
+				if from == "-active" && !nonEmpty(src) {
+					continue
+				}
 				if err := promoteStep(g.prefix == "kernelcache", src, dst); err != nil {
 					return fmt.Errorf("promote: %s%s %s->%s: %w", g.prefix, s, from[1:], to[1:], err)
 				}

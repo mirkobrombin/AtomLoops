@@ -167,6 +167,22 @@ func TestPromoteRejectsCandidateWithoutActiveSlot(t *testing.T) {
 	}
 }
 
+func TestPromoteFirstCandidateWithoutActiveSlot(t *testing.T) {
+	esp := t.TempDir()
+	os.WriteFile(filepath.Join(esp, "kernelcache-next.efi"), []byte("next-kernel"), 0o644)
+	os.WriteFile(filepath.Join(esp, "kernelcache-next.efi.sig"), []byte("next-sig"), 0o644)
+
+	if err := PromoteSlots(StageDirs{ESP: esp}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(esp, "kernelcache-active.efi")); string(b) != "next-kernel" {
+		t.Errorf("first candidate was not promoted: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(esp, "kernelcache-prev.efi")); !os.IsNotExist(err) {
+		t.Errorf("a previous slot appeared from nothing: %v", err)
+	}
+}
+
 func TestSyncBootStateFromWAL(t *testing.T) {
 	esp := t.TempDir()
 	wal := filepath.Join(t.TempDir(), "deployment.json")
