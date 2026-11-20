@@ -48,8 +48,8 @@ func (c Cmdline) Has(word string) bool {
 	return false
 }
 
-// MountEarly mounts /proc, /sys and /dev, creates the device-mapper control
-// node, and points standard input and output at the console.
+// MountEarly mounts /proc, /sys, /dev and /run, creates the device-mapper
+// control node, and points standard input and output at the console.
 func MountEarly() {
 	os.MkdirAll("/proc", 0755)
 	os.MkdirAll("/sys", 0755)
@@ -66,6 +66,9 @@ func MountEarly() {
 	}
 	os.MkdirAll("/dev/mapper", 0755)
 	os.MkdirAll("/run", 0755)
+	if MountedFS("/run") == "" {
+		syscall.Mount("tmpfs", "/run", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV, "mode=0755")
+	}
 	if _, err := os.Stat("/dev/mapper/control"); err != nil {
 		if mm, err := os.ReadFile("/sys/class/misc/device-mapper/dev"); err == nil {
 			var major, minor int
