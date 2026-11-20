@@ -28,7 +28,7 @@ func Run(kind, dir, phase string, env []string) error {
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		info, err := e.Info()
+		info, err := os.Stat(filepath.Join(dir, e.Name()))
 		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 			continue
 		}
