@@ -139,10 +139,8 @@ func SwitchRoot(init string, args []string) error {
 	if fs.Type != ramfsMagic && fs.Type != tmpfsMagic {
 		return fmt.Errorf("the current root is not an initramfs")
 	}
-	for _, m := range []string{"/dev", "/proc", "/sys", "/run"} {
-		if MountedFS(m) == "" {
-			continue
-		}
+	mounts, _ := os.ReadFile("/proc/mounts")
+	for _, m := range carriedMounts(string(mounts)) {
 		if err := Move(m, NewRoot+m); err != nil {
 			Unmount(m)
 		}
@@ -161,6 +159,22 @@ func SwitchRoot(init string, args []string) error {
 		return err
 	}
 	return syscall.Exec(init, append([]string{init}, args...), os.Environ())
+}
+
+func carriedMounts(mounts string) []string {
+	present := map[string]bool{}
+	for _, line := range strings.Split(mounts, "\n") {
+		if f := strings.Fields(line); len(f) >= 2 {
+			present[f[1]] = true
+		}
+	}
+	var out []string
+	for _, m := range []string{"/dev", "/proc", "/sys", "/run"} {
+		if present[m] {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func removeContents(dir string, dev uint64) {
