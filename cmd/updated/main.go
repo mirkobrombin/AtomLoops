@@ -819,10 +819,11 @@ func newUpdateServer(c cfg) *http.Server {
 	return &http.Server{Handler: mux}
 }
 
-// startupCheck retries initial signed checks briefly while networking settles.
+// startupCheck retries initial signed checks while networking and the clock settle.
 // Scheduled refreshes remain owned by updated-check.timer.
 func startupCheck(c cfg, statuses *statusStore, retryDelay time.Duration) {
-	const attempts = 3
+	const attempts = 8
+	delay, maxDelay := retryDelay, 12*retryDelay
 	for attempt := 0; attempt < attempts; attempt++ {
 		checked := pollOnce(c)
 		_, err := statuses.publishPoll(checked)
@@ -832,7 +833,8 @@ func startupCheck(c cfg, statuses *statusStore, retryDelay time.Duration) {
 			return
 		}
 		if attempt+1 < attempts {
-			time.Sleep(retryDelay)
+			time.Sleep(delay)
+			delay = min(2*delay, maxDelay)
 		}
 	}
 }

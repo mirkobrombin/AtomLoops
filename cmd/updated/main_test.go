@@ -354,6 +354,33 @@ func TestStartupCheckRetriesNetworkErrorsWithoutDownloading(t *testing.T) {
 	}
 }
 
+func TestStartupCheckWaitsForASlowNetwork(t *testing.T) {
+	feed, rp, _, _ := setupFeed(t)
+	old := rootPub
+	rootPub = rp
+	t.Cleanup(func() { rootPub = old })
+
+	var certRequests atomic.Int32
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/signing-cert.json" && certRequests.Add(1) <= 6 {
+			http.Error(w, "network unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		http.Redirect(w, r, feed+r.URL.RequestURI(), http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(slow.Close)
+
+	statuses := statusStore{statePath: filepath.Join(t.TempDir(), "status.json")}
+	startupCheck(cfg{feed: slow.URL, current: "v1"}, &statuses, time.Millisecond)
+
+	if status := statuses.get(); status.State != "available" {
+		t.Fatalf("status after a slow network = %+v, want available", status)
+	}
+	if got := certRequests.Load(); got != 7 {
+		t.Fatalf("startup signing-cert requests = %d, want 7", got)
+	}
+}
+
 func TestStartupCheckRetriesNetworkErrorBehindReadyStatus(t *testing.T) {
 	feed, rp, stats, _ := setupFeed(t)
 	old := rootPub
