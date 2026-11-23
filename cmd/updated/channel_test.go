@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"net/http"
 	"net/http/httptest"
@@ -59,8 +60,8 @@ func TestChannelSelectionFollowsFile(t *testing.T) {
 	if err := ch.set("stable"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(file); !os.IsNotExist(err) {
-		t.Fatalf("default channel left the file behind: %v", err)
+	if b, _ := os.ReadFile(file); string(b) != "stable\n" {
+		t.Fatalf("choosing the default channel wrote %q", b)
 	}
 	if (cfg{feed: "https://fixed"}).feedURL() != "https://fixed" {
 		t.Fatal("no channels must keep the fixed feed")
@@ -146,5 +147,67 @@ func TestChannelEndpointSwitchesFeedAndRechecks(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/channel", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("DELETE = %d", rec.Code)
+	}
+}
+
+func TestADeviceFollowsTheChannelItsReleaseCameFrom(t *testing.T) {
+	feeds := map[string]string{"https://s": "v326", "https://c": "v343"}
+	latest := func(feed string) (string, error) { return feeds[feed], nil }
+	for _, tc := range []struct{ running, want string }{
+		{"v343", "canary"},
+		{"v326", "stable"},
+		{"v300", "stable"},
+	} {
+		file := filepath.Join(t.TempDir(), "channel")
+		ch, err := parseChannels("stable=https://s,canary=https://c", file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name, err := ch.adopt(tc.running, latest)
+		if err != nil || name != tc.want || ch.current() != tc.want {
+			t.Fatalf("running %s adopted %q (%v), current %s, want %s", tc.running, name, err, ch.current(), tc.want)
+		}
+	}
+}
+
+func TestAChosenChannelIsNeverReplaced(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "channel")
+	ch, err := parseChannels("stable=https://s,canary=https://c", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ch.set("stable"); err != nil {
+		t.Fatal(err)
+	}
+	asked := false
+	name, err := ch.adopt("v343", func(string) (string, error) { asked = true; return "v326", nil })
+	if err != nil || name != "" || asked || ch.current() != "stable" {
+		t.Fatalf("adopt over a choice = %q %v asked %t current %s", name, err, asked, ch.current())
+	}
+}
+
+func TestAnUnreachableFeedLeavesTheChannelUnchosen(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "channel")
+	ch, err := parseChannels("stable=https://s,canary=https://c", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ch.adopt("v343", func(string) (string, error) { return "", errors.New("offline") }); err == nil {
+		t.Fatal("an offline feed was not reported")
+	}
+	if ch.chosen() {
+		t.Fatal("an offline feed chose a channel")
+	}
+}
+
+func TestAReleaseAheadOfEveryChannelStaysUnchosen(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "channel")
+	ch, err := parseChannels("stable=https://s,canary=https://c", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := ch.adopt("v400", func(feed string) (string, error) { return "v343", nil })
+	if err != nil || name != "" || ch.chosen() {
+		t.Fatalf("a development release adopted %q (%v)", name, err)
 	}
 }

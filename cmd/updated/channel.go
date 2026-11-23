@@ -104,12 +104,6 @@ func (ch channels) set(name string) error {
 	if ch.find(name) < 0 {
 		return fmt.Errorf("unknown channel %q", name)
 	}
-	if name == ch.list[0].name {
-		if err := os.Remove(ch.file); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
 	if err := os.MkdirAll(filepath.Dir(ch.file), 0o755); err != nil {
 		return err
 	}
@@ -118,6 +112,32 @@ func (ch channels) set(name string) error {
 		return err
 	}
 	return os.Rename(tmp, ch.file)
+}
+
+func (ch channels) chosen() bool {
+	_, err := os.Stat(ch.file)
+	return err == nil
+}
+
+func (ch channels) adopt(running string, latest func(feed string) (string, error)) (string, error) {
+	if len(ch.list) == 0 || ch.chosen() {
+		return "", nil
+	}
+	for _, c := range ch.list {
+		v, err := latest(c.feed)
+		if err != nil {
+			return "", err
+		}
+		if !newer(running, v) {
+			return c.name, ch.set(c.name)
+		}
+	}
+	return "", nil
+}
+
+func latestVersion(feed string) (string, error) {
+	m, _, err := verifiedManifest(feed)
+	return m.Version, err
 }
 
 func (ch channels) state() channelState {

@@ -440,7 +440,21 @@ type cfg struct {
 }
 
 // pollOnce checks the feed without downloading or staging artifacts.
-func pollOnce(c cfg) Status { return check(c.feedURL(), c.current, c.wal) }
+func pollOnce(c cfg) Status {
+	if name, err := c.channels.adopt(installedOr(c.current, c.wal), latestVersion); err != nil {
+		fmt.Fprintf(os.Stderr, "updated: channel: %v\n", err)
+	} else if name != "" {
+		fmt.Fprintf(os.Stderr, "updated: following the %s channel the running release came from\n", name)
+	}
+	return check(c.feedURL(), c.current, c.wal)
+}
+
+func installedOr(current, wal string) string {
+	if current != "" {
+		return current
+	}
+	return installedVersion(wal)
+}
 
 // writeState atomically writes the status file (temp + rename). Empty path is a no-op.
 func writeState(path string, s Status) error {
