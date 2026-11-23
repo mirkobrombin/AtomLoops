@@ -728,7 +728,9 @@ func newUpdateServer(c cfg) *http.Server {
 		ctx := statuses.downloadContext()
 		if _, err := stage(ctx, c, s.manifestSHA256, onProg); err != nil {
 			if ctx.Err() != nil {
-				done = Status{State: "idle", Current: s.Current}
+				done = s
+				done.State = "available"
+				done.Percent = 0
 			} else if errors.Is(err, errStageBusy) {
 				done.State = "downloading"
 				done.Percent = 0
@@ -788,6 +790,19 @@ func newUpdateServer(c cfg) *http.Server {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		json.NewEncoder(w).Encode(clientStatus(statuses.get()))
+	})
+	mux.HandleFunc("/download/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if !requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		if statuses.get().State != "downloading" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(clientStatus(statuses.get()))
+			return
+		}
+		statuses.abortDownload()
+		writeJSON(w, statuses.getForClient())
 	})
 	registerLoaderHandlers(mux, c, &statuses)
 	registerChannelHandlers(mux, c, &statuses)

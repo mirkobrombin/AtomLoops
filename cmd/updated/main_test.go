@@ -224,6 +224,7 @@ func TestRebootClaimSharesStageLock(t *testing.T) {
 type feedStats struct {
 	checks    atomic.Int32
 	artifacts atomic.Int32
+	stall     atomic.Bool
 }
 
 // setupFeed serves a signed feed (root -> signing-cert -> manifest) advertising v2.
@@ -260,6 +261,10 @@ func setupFeed(t *testing.T) (feed string, rootPubBytes []byte, stats *feedStats
 			stats.checks.Add(1)
 		default:
 			stats.artifacts.Add(1)
+			if stats.stall.Load() {
+				<-r.Context().Done()
+				return
+			}
 		}
 		files.ServeHTTP(w, r)
 	}))
@@ -616,6 +621,76 @@ func TestUnixServerChecksThenDownloadsOnlyOnPost(t *testing.T) {
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("download did not stage %s: %v", path, err)
+		}
+	}
+}
+
+func TestCancellingADownloadKeepsTheUpdateOnOffer(t *testing.T) {
+	feed, rp, stats, _ := setupFeed(t)
+	old := rootPub
+	rootPub = rp
+	t.Cleanup(func() { rootPub = old })
+	stats.stall.Store(true)
+
+	work := t.TempDir()
+	wal := filepath.Join(work, "deployment.json")
+	if err := deployment.New("dev", "v1").Save(wal); err != nil {
+		t.Fatal(err)
+	}
+	c := cfg{
+		feed: feed, current: "v1", state: filepath.Join(work, "status.json"), wal: wal,
+		rootfsDir: filepath.Join(work, "rootfs"), espDir: filepath.Join(work, "esp"),
+		firmwareDir: filepath.Join(work, "firmware"), stageLock: filepath.Join(work, "stage.lock"),
+	}
+	handler := newUpdateServer(c).Handler
+	request := func(method, path string) (int, Status) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+		var status Status
+		if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+			t.Fatalf("%s %s: %s", method, path, rec.Body.String())
+		}
+		return rec.Code, status
+	}
+	waitState := func(want string) Status {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			_, status := request(http.MethodGet, "/status")
+			if status.State == want {
+				return status
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("status = %+v, want %s", status, want)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	if code, _ := request(http.MethodPost, "/download/cancel"); code != http.StatusConflict {
+		t.Fatalf("cancel with nothing downloading = %d, want 409", code)
+	}
+	for range 2 {
+		offer := waitState("available")
+		if code, _ := request(http.MethodPost, "/download?token="+offer.ConsentToken); code != http.StatusOK {
+			t.Fatalf("download = %d", code)
+		}
+		waitState("downloading")
+		for stats.artifacts.Load() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		code, status := request(http.MethodPost, "/download/cancel")
+		if code != http.StatusOK || status.State != "available" || status.Latest != "v2" || status.ConsentToken == "" {
+			t.Fatalf("cancel = %d %+v, want the v2 offer back", code, status)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(work, "rootfs")); err == nil {
+		entries, _ := os.ReadDir(filepath.Join(work, "rootfs"))
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".tmp") && !strings.HasPrefix(e.Name(), ".") {
+				t.Errorf("cancelled download left %s staged", e.Name())
+			}
 		}
 	}
 }
