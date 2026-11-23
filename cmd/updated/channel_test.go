@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mirkobrombin/atomloops/internal/deployment"
@@ -147,6 +148,56 @@ func TestChannelEndpointSwitchesFeedAndRechecks(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/channel", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("DELETE = %d", rec.Code)
+	}
+}
+
+func TestSwitchingChannelAbortsTheDownloadInProgress(t *testing.T) {
+	feed, rp, _, _ := setupFeed(t)
+	old := rootPub
+	rootPub = rp
+	t.Cleanup(func() { rootPub = old })
+
+	work := t.TempDir()
+	wal := filepath.Join(work, "deployment.json")
+	if err := deployment.New("dev", "v1").Save(wal); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := parseChannels("stable=http://127.0.0.1:1,canary="+feed, filepath.Join(work, "channel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cfg{current: "v1", wal: wal, channels: ch}
+	statuses := statusStore{statePath: filepath.Join(work, "status.json")}
+	if err := writeState(statuses.statePath, Status{
+		State: "available", Current: "v1", Latest: "v0.9", manifestSHA256: strings.Repeat("a", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	token := clientStatus(statuses.getForClient()).ConsentToken
+	if _, ok := statuses.claimDownload(token); !ok {
+		t.Fatal("download claim refused")
+	}
+	aborted := make(chan struct{})
+	go func() {
+		<-statuses.downloadContext().Done()
+		close(aborted)
+		statuses.complete(Status{State: "idle", Current: "v1"})
+	}()
+
+	mux := http.NewServeMux()
+	registerChannelHandlers(mux, c, &statuses)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/channel?name=canary", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST canary = %d %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-aborted:
+	default:
+		t.Fatal("the download from the old channel kept running")
+	}
+	if got := statuses.get(); got.State != "available" || got.Latest != "v2" {
+		t.Fatalf("status after switching to canary = %+v, want the canary release", got)
 	}
 }
 

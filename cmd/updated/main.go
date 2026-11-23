@@ -528,7 +528,7 @@ func releaseStageLock(lock *os.File) {
 
 // stage fetches + verifies + stages the candidate via otad.Stage while holding
 // the lock shared with any other staging process.
-func stage(c cfg, expectedManifestSHA256 string, onProgress otad.ProgressFunc) (string, error) {
+func stage(parent context.Context, c cfg, expectedManifestSHA256 string, onProgress otad.ProgressFunc) (string, error) {
 	lock, err := acquireStageLock(c.stageLock)
 	if err != nil {
 		return "", err
@@ -537,7 +537,7 @@ func stage(c cfg, expectedManifestSHA256 string, onProgress otad.ProgressFunc) (
 		releaseStageLock(lock)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 	defer cancel()
 	ctx = otad.WithProgress(ctx, onProgress)
 	msg, err := otad.StageExpectedManifest(ctx, c.wal, strings.TrimRight(c.feedURL(), "/")+"/manifest.json", "", rootPub,
@@ -555,6 +555,9 @@ type statusStore struct {
 	statePath  string
 	live       Status
 	advertised Status
+	ctx        context.Context
+	stop       context.CancelFunc
+	stopped    chan struct{}
 }
 
 func (s *statusStore) currentLocked() Status {
@@ -604,6 +607,8 @@ func (s *statusStore) claimDownload(consentToken string) (Status, bool) {
 		return s.currentLocked(), false
 	}
 	s.advertised = Status{}
+	s.ctx, s.stop = context.WithCancel(context.Background())
+	s.stopped = make(chan struct{})
 	s.live = status
 	s.live.State = "downloading"
 	s.live.Percent = 0
@@ -627,6 +632,31 @@ func (s *statusStore) complete(status Status) {
 	defer s.mu.Unlock()
 	_ = writeState(s.statePath, status)
 	s.live = Status{}
+	if s.stop != nil {
+		s.stop()
+		close(s.stopped)
+	}
+	s.ctx, s.stop, s.stopped = nil, nil, nil
+}
+
+func (s *statusStore) downloadContext() context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ctx == nil {
+		return context.Background()
+	}
+	return s.ctx
+}
+
+func (s *statusStore) abortDownload() {
+	s.mu.Lock()
+	stop, stopped := s.stop, s.stopped
+	s.mu.Unlock()
+	if stop == nil {
+		return
+	}
+	stop()
+	<-stopped
 }
 
 func (s *statusStore) publishPoll(status Status) (Status, error) {
@@ -695,8 +725,11 @@ func newUpdateServer(c cfg) *http.Server {
 		done.State = "ready"
 		done.Percent = 100
 		done.Error = ""
-		if _, err := stage(c, s.manifestSHA256, onProg); err != nil {
-			if errors.Is(err, errStageBusy) {
+		ctx := statuses.downloadContext()
+		if _, err := stage(ctx, c, s.manifestSHA256, onProg); err != nil {
+			if ctx.Err() != nil {
+				done = Status{State: "idle", Current: s.Current}
+			} else if errors.Is(err, errStageBusy) {
 				done.State = "downloading"
 				done.Percent = 0
 			} else {

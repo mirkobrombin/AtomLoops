@@ -192,6 +192,7 @@ func registerChannelHandlers(mux *http.ServeMux, c cfg, statuses *statusStore) {
 				reply(w, http.StatusConflict, st)
 				return
 			}
+			statuses.abortDownload()
 			statuses.publishPoll(pollOnce(c))
 			reply(w, http.StatusOK, c.channels.state())
 		default:
