@@ -266,6 +266,7 @@ type rangeKey struct{}
 type resumeFrom struct {
 	offset    int64
 	validator string
+	length    int64
 }
 
 const maxRedirects = 5
@@ -278,7 +279,9 @@ func get(ctx context.Context, rawURL string) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
-		if from, ok := ctx.Value(rangeKey{}).(resumeFrom); ok && from.offset > 0 {
+		if from, ok := ctx.Value(rangeKey{}).(resumeFrom); ok && from.length > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", from.offset, from.offset+from.length-1))
+		} else if ok && from.offset > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", from.offset))
 			if from.validator != "" {
 				req.Header.Set("If-Range", from.validator)
@@ -318,4 +321,16 @@ func VerifyManifestSig(data, sig, pubkey []byte) bool {
 		return false
 	}
 	return ed25519.Verify(ed25519.PublicKey(pubkey), data, sig)
+}
+
+func FetchRange(ctx context.Context, url string, offset int64, length int) ([]byte, error) {
+	resp, err := get(context.WithValue(ctx, rangeKey{}, resumeFrom{offset: offset, length: int64(length)}), url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent {
+		return nil, fmt.Errorf("fetch %s: range %d+%d answered with status %d", url, offset, length, resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, int64(length)))
 }

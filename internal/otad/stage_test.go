@@ -183,11 +183,43 @@ func TestStageRefusesDowngrade(t *testing.T) {
 	}
 }
 
-func TestVersionNum(t *testing.T) {
+func TestVersionNumTail(t *testing.T) {
 	if n, ok := versionNum("v43"); !ok || n != 43 {
 		t.Errorf("versionNum(v43) = %d,%v", n, ok)
 	}
 	if !isDowngrade("v2", "v5") || isDowngrade("v6", "v5") || isDowngrade("x", "y") {
 		t.Error("isDowngrade wrong")
+	}
+}
+
+func TestVersionNumCases(t *testing.T) {
+	cases := []struct {
+		in string
+		n  int
+		ok bool
+	}{
+		{"v1", 1, true}, {"v2", 2, true}, {"v10", 10, true},
+		{"2026.07", 7, true}, {"stable-3", 3, true},
+		{"latest", 0, false}, {"", 0, false}, {"v", 0, false},
+	}
+	for _, c := range cases {
+		n, ok := versionNum(c.in)
+		if n != c.n || ok != c.ok {
+			t.Errorf("versionNum(%q) = (%d,%v), want (%d,%v)", c.in, n, ok, c.n, c.ok)
+		}
+	}
+}
+
+func TestNewer(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"v2", "v1", true}, {"v10", "v9", true}, {"v1", "v2", false}, {"v2", "v2", false}, {"stable", "stable", false},
+	}
+	for _, c := range cases {
+		if got := Newer(c.a, c.b); got != c.want {
+			t.Errorf("Newer(%q, %q) = %v", c.a, c.b, got)
+		}
 	}
 }

@@ -166,6 +166,8 @@ func validFamilyName(name string) bool {
 	return true
 }
 
+const ManifestLifetime = 45 * 24 * time.Hour
+
 func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, error) {
 	if r.RootFSHashTreeFile == "" || r.RootFSHashTreeURL == "" {
 		return "", fmt.Errorf("manifest: rootfs hash tree missing -- the update could not be verity-mounted after promotion")
@@ -179,6 +181,10 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 	rh, err := hashFile(r.RootFSFile)
 	if err != nil {
 		return "", fmt.Errorf("hash rootfs: %w", err)
+	}
+	blocks, err := otad.HashBlocks(r.RootFSFile, otad.BlockSize)
+	if err != nil {
+		return "", fmt.Errorf("hash rootfs blocks: %w", err)
 	}
 	rth, err := hashFile(r.RootFSHashTreeFile)
 	if err != nil {
@@ -204,6 +210,9 @@ func BuildManifest(outPath string, r ReleaseSpec, fw ...FirmwareSpec) (string, e
 		RootFSVerityHash:   r.RootFSVerityHash,
 		RootFSHashTreeURL:  r.RootFSHashTreeURL,
 		RootFSHashTreeHash: rth,
+		RootFSBlockSize:    otad.BlockSize,
+		RootFSBlocks:       blocks,
+		Expires:            time.Now().UTC().Add(ManifestLifetime).Format(time.RFC3339),
 		KernelcacheURL:     r.KernelcacheURL,
 		KernelcacheHash:    kh,
 		KernelcacheSigURL:  r.KernelcacheSigURL,

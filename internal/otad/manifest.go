@@ -42,10 +42,13 @@ type Manifest struct {
 	// new image against the previous hash tree fails verity -- so a candidate is only
 	// promotable when this is staged too. Same contract the firmware track already
 	// follows with FirmwareHashTreeURL.
-	RootFSHashTreeURL  string `json:"rootfs_hashtree_url,omitempty"`
-	RootFSHashTreeHash string `json:"rootfs_hashtree_hash,omitempty"`
-	KernelcacheURL     string `json:"kernelcache_url"`
-	KernelcacheHash    string `json:"kernelcache_hash"`
+	RootFSHashTreeURL  string   `json:"rootfs_hashtree_url,omitempty"`
+	RootFSHashTreeHash string   `json:"rootfs_hashtree_hash,omitempty"`
+	RootFSBlockSize    int      `json:"rootfs_block_size,omitempty"`
+	RootFSBlocks       []string `json:"rootfs_blocks,omitempty"`
+	Expires            string   `json:"expires,omitempty"`
+	KernelcacheURL     string   `json:"kernelcache_url"`
+	KernelcacheHash    string   `json:"kernelcache_hash"`
 	// KernelcacheSigURL is the loader's Ed25519 signature over the kernelcache;
 	// KernelcacheSigHash is its SHA256. The loader refuses to chain a UKI whose
 	// signature does not verify, so a new kernelcache promoted next to the previous

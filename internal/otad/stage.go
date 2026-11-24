@@ -98,7 +98,8 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 		return "", err
 	}
 	rPath := filepath.Join(dirs.Rootfs, "rootfs-next.erofs")
-	if _, err := FetchTo(ctx, m.RootFSURL, rPath); err != nil {
+	_, local := ctx.Value(localDirKey{}).(string)
+	if err := fetchRootFS(ctx, vm, m, rPath, local); err != nil {
 		return "", err
 	}
 	if err := VerifySHA256(rPath, m.RootFSHash); err != nil {
@@ -254,6 +255,7 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 			return "", fmt.Errorf("staged %s but activating firmware bundle %q failed: %w", m.Version, fw.Name, err)
 		}
 	}
+	offerStaged(vm, m, rPath)
 	artifacts := "rootfs + kernelcache fetched + verified"
 	if len(staged) > 0 {
 		names := make([]string, len(staged))
@@ -263,6 +265,15 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 		artifacts = fmt.Sprintf("rootfs + kernelcache + firmware [%s] fetched + verified", strings.Join(names, ", "))
 	}
 	return fmt.Sprintf("staged %s (%s); reboot to try it", m.Version, artifacts), nil
+}
+
+func Newer(a, b string) bool {
+	na, oka := versionNum(a)
+	nb, okb := versionNum(b)
+	if oka && okb {
+		return na > nb
+	}
+	return a != b && a > b
 }
 
 // versionNum extracts the trailing integer of a version string (v43 -> 43).

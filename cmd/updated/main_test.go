@@ -20,24 +20,6 @@ import (
 	"github.com/mirkobrombin/atomloops/internal/signing"
 )
 
-func TestVersionNum(t *testing.T) {
-	cases := []struct {
-		in string
-		n  int
-		ok bool
-	}{
-		{"v1", 1, true}, {"v2", 2, true}, {"v10", 10, true},
-		{"2026.07", 7, true}, {"stable-3", 3, true},
-		{"latest", 0, false}, {"", 0, false}, {"v", 0, false},
-	}
-	for _, c := range cases {
-		n, ok := versionNum(c.in)
-		if n != c.n || ok != c.ok {
-			t.Errorf("versionNum(%q) = (%d,%v), want (%d,%v)", c.in, n, ok, c.n, c.ok)
-		}
-	}
-}
-
 func TestNewer(t *testing.T) {
 	// numeric tail wins, and v10 must beat v9 (not string-compare)
 	if !newer("v2", "v1") {

@@ -27,7 +27,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -408,26 +407,7 @@ func installedVersion(wal string) string {
 
 // newer reports whether version a is strictly newer than b, comparing the trailing
 // integer (v2 > v1). If either lacks a numeric tail, falls back to string inequality.
-func newer(a, b string) bool {
-	na, oka := versionNum(a)
-	nb, okb := versionNum(b)
-	if oka && okb {
-		return na > nb
-	}
-	return a != b && a > b
-}
-
-func versionNum(v string) (int, bool) {
-	i := len(v)
-	for i > 0 && v[i-1] >= '0' && v[i-1] <= '9' {
-		i--
-	}
-	if i == len(v) {
-		return 0, false
-	}
-	n, err := strconv.Atoi(v[i:])
-	return n, err == nil
-}
+func newer(a, b string) bool { return otad.Newer(a, b) }
 
 type cfg struct {
 	feed, sock, current, state string
@@ -865,5 +845,8 @@ func serve(c cfg) error {
 		fmt.Fprintf(os.Stderr, "updated: history %s: %v\n", c.history, err)
 	}
 	fmt.Fprintf(os.Stderr, "updated: serving %s (feed %s)\n", c.sock, c.feedURL())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startNeighbours(ctx, c, defaultNeighbourPolicy)
 	return newUpdateServer(c).Serve(ln)
 }
