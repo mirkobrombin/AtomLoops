@@ -240,3 +240,129 @@ func TestFetchToAbandonsStalledDownload(t *testing.T) {
 		t.Fatalf("stall detected after %v", time.Since(start))
 	}
 }
+
+func TestFetchToResumesAcrossCalls(t *testing.T) {
+	fastRetries(t)
+	fetchAttemptsOld := fetchAttempts
+	fetchAttempts = 1
+	defer func() { fetchAttempts = fetchAttemptsOld }()
+	body := make([]byte, 256*1024)
+	rand.Read(body)
+	var ranges, ifRanges []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		ranges = append(ranges, r.Header.Get("Range"))
+		ifRanges = append(ifRanges, r.Header.Get("If-Range"))
+		first := len(ranges) == 1
+		mu.Unlock()
+		w.Header().Set("ETag", `"v1"`)
+		if first {
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.Write(body[:100000])
+			w.(http.Flusher).Flush()
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			conn.Close()
+			return
+		}
+		http.ServeContent(w, r, "rootfs.erofs", time.Time{}, bytes.NewReader(body))
+	}))
+	defer srv.Close()
+	dest := filepath.Join(t.TempDir(), "rootfs.erofs")
+	if _, err := FetchTo(context.Background(), srv.URL, dest); err == nil {
+		t.Fatal("cut download accepted")
+	}
+	if info, err := os.Stat(dest + ".tmp"); err != nil || info.Size() != 100000 {
+		t.Fatalf("partial not kept: %v", err)
+	}
+	n, err := FetchTo(context.Background(), srv.URL, dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(dest)
+	if n != int64(len(body)) || !bytes.Equal(got, body) {
+		t.Fatalf("n=%d equal=%v", n, bytes.Equal(got, body))
+	}
+	if len(ranges) != 2 || ranges[1] != "bytes=100000-" || ifRanges[1] != `"v1"` {
+		t.Fatalf("ranges %q if-range %q", ranges, ifRanges)
+	}
+	if _, err := os.Stat(dest + ".tmp.src"); !os.IsNotExist(err) {
+		t.Fatalf("record left behind: %v", err)
+	}
+}
+
+func TestFetchToDropsPartialOfAnotherURL(t *testing.T) {
+	body := []byte("new release bytes")
+	var ranges []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ranges = append(ranges, r.Header.Get("Range"))
+		w.Write(body)
+	}))
+	defer srv.Close()
+	dest := filepath.Join(t.TempDir(), "rootfs.erofs")
+	os.WriteFile(dest+".tmp", []byte("old release"), 0o644)
+	os.WriteFile(dest+".tmp.src", []byte(srv.URL+"/v1\n\"v1\""), 0o644)
+	if _, err := FetchTo(context.Background(), srv.URL+"/v2", dest); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(dest)
+	if !bytes.Equal(got, body) || len(ranges) != 1 || ranges[0] != "" {
+		t.Fatalf("got %q ranges %q", got, ranges)
+	}
+}
+
+func TestFetchToRestartsWhenServedFileChanged(t *testing.T) {
+	body := []byte("rebuilt image with other bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v2"`)
+		http.ServeContent(w, r, "rootfs.erofs", time.Time{}, bytes.NewReader(body))
+	}))
+	defer srv.Close()
+	dest := filepath.Join(t.TempDir(), "rootfs.erofs")
+	os.WriteFile(dest+".tmp", []byte("stale"), 0o644)
+	os.WriteFile(dest+".tmp.src", []byte(srv.URL+"\n\"v1\""), 0o644)
+	if _, err := FetchTo(context.Background(), srv.URL, dest); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(dest)
+	if !bytes.Equal(got, body) {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFetchToDropsPartialOnNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	dest := filepath.Join(t.TempDir(), "rootfs.erofs")
+	os.WriteFile(dest+".tmp", []byte("partial"), 0o644)
+	os.WriteFile(dest+".tmp.src", []byte(srv.URL+"\n"), 0o644)
+	if _, err := FetchTo(context.Background(), srv.URL, dest); err == nil {
+		t.Fatal("404 accepted")
+	}
+	if _, err := os.Stat(dest + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("partial kept after 404: %v", err)
+	}
+}
+
+func TestFetchToRestartsWhenServerIgnoresIfRange(t *testing.T) {
+	fastRetries(t)
+	body := []byte("rebuilt image with other bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Del("If-Range")
+		w.Header().Set("ETag", `"v2"`)
+		http.ServeContent(w, r, "rootfs.erofs", time.Time{}, bytes.NewReader(body))
+	}))
+	defer srv.Close()
+	dest := filepath.Join(t.TempDir(), "rootfs.erofs")
+	os.WriteFile(dest+".tmp", []byte("stale"), 0o644)
+	os.WriteFile(dest+".tmp.src", []byte(srv.URL+"\n\"v1\""), 0o644)
+	if _, err := FetchTo(context.Background(), srv.URL, dest); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(dest)
+	if !bytes.Equal(got, body) {
+		t.Fatalf("got %q", got)
+	}
+}

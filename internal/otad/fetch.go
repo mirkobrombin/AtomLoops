@@ -61,10 +61,15 @@ func (p *progressReader) Read(b []byte) (int, error) {
 // failures, server errors (408, 429, 5xx) and connections cut mid-body are
 // retried with backoff, resuming from the bytes already on disk with a Range
 // request. A download is abandoned only when no data arrives for stallTimeout,
-// never because the whole transfer takes long. Returns the bytes written.
+// never because the whole transfer takes long. A partial download that runs out
+// of attempts stays on disk and the next call for the same url picks it up, so
+// a slow or flaky link still reaches the end across several update checks.
+// Returns the bytes written.
 func FetchTo(ctx context.Context, url, dest string) (int64, error) {
 	tmp := dest + ".tmp"
-	os.Remove(tmp)
+	if _, ok := partialFrom(tmp, url); !ok {
+		discardPartial(tmp)
+	}
 	if path, ok := strings.CutPrefix(url, fileScheme); ok {
 		n, err := copyLocal(ctx, path, tmp)
 		if err != nil {
@@ -74,9 +79,11 @@ func FetchTo(ctx context.Context, url, dest string) (int64, error) {
 			os.Remove(tmp)
 			return 0, err
 		}
+		os.Remove(tmp + partialSuffix)
 		return n, syncDir(filepath.Dir(dest))
 	}
 	var last error
+	retry := false
 	for attempt := 0; attempt < fetchAttempts; attempt++ {
 		if attempt > 0 {
 			wait := retryDelay << (attempt - 1)
@@ -85,13 +92,16 @@ func FetchTo(ctx context.Context, url, dest string) (int64, error) {
 			}
 			select {
 			case <-ctx.Done():
-				os.Remove(tmp)
+				discardPartial(tmp)
 				return 0, ctx.Err()
 			case <-time.After(wait):
 			}
 		}
-		n, retry, err := fetchOnce(ctx, url, tmp)
+		var n int64
+		var err error
+		n, retry, err = fetchOnce(ctx, url, tmp)
 		if err == nil {
+			os.Remove(tmp + partialSuffix)
 			if err := os.Rename(tmp, dest); err != nil {
 				os.Remove(tmp)
 				return 0, err
@@ -106,8 +116,52 @@ func FetchTo(ctx context.Context, url, dest string) (int64, error) {
 			break
 		}
 	}
-	os.Remove(tmp)
+	if !retry || ctx.Err() != nil || !resumable(tmp, url) {
+		discardPartial(tmp)
+	}
 	return 0, last
+}
+
+const partialSuffix = ".src"
+
+func partialFrom(tmp, url string) (string, bool) {
+	data, err := os.ReadFile(tmp + partialSuffix)
+	if err != nil {
+		return "", false
+	}
+	src, validator, _ := strings.Cut(string(data), "\n")
+	if src != url {
+		return "", false
+	}
+	if _, err := os.Stat(tmp); err != nil {
+		return "", false
+	}
+	return validator, true
+}
+
+func resumable(tmp, url string) bool {
+	info, err := os.Stat(tmp)
+	if err != nil || info.Size() == 0 {
+		return false
+	}
+	_, ok := partialFrom(tmp, url)
+	return ok
+}
+
+func recordPartial(tmp, url, validator string) error {
+	return os.WriteFile(tmp+partialSuffix, []byte(url+"\n"+validator), 0o644)
+}
+
+func discardPartial(tmp string) {
+	os.Remove(tmp)
+	os.Remove(tmp + partialSuffix)
+}
+
+func validatorOf(h http.Header) string {
+	if tag := h.Get("ETag"); tag != "" && !strings.HasPrefix(tag, "W/") {
+		return tag
+	}
+	return h.Get("Last-Modified")
 }
 
 var (
@@ -149,7 +203,8 @@ func fetchOnce(parent context.Context, url, tmp string) (int64, bool, error) {
 	timer := time.AfterFunc(stallTimeout, cancel)
 	defer timer.Stop()
 	if have > 0 {
-		ctx = context.WithValue(ctx, rangeKey{}, have)
+		validator, _ := partialFrom(tmp, url)
+		ctx = context.WithValue(ctx, rangeKey{}, resumeFrom{offset: have, validator: validator})
 	}
 	resp, err := get(ctx, url)
 	if err != nil {
@@ -163,6 +218,10 @@ func fetchOnce(parent context.Context, url, tmp string) (int64, bool, error) {
 		if _, err := fmt.Sscanf(resp.Header.Get("Content-Range"), "bytes %d-%d/%d", &start, &end, &size); err != nil || start != have {
 			f.Truncate(0)
 			return 0, true, fmt.Errorf("fetch %s: unusable resume range %q", url, resp.Header.Get("Content-Range"))
+		}
+		if recorded, _ := partialFrom(tmp, url); recorded != "" && recorded != validatorOf(resp.Header) {
+			f.Truncate(0)
+			return 0, true, fmt.Errorf("fetch %s: changed on the server since the partial download", url)
 		}
 		total = size
 	case resp.StatusCode == http.StatusOK:
@@ -178,6 +237,9 @@ func fetchOnce(parent context.Context, url, tmp string) (int64, bool, error) {
 		return 0, true, fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
 	default:
 		return 0, retryable(resp.StatusCode), fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
+	}
+	if err := recordPartial(tmp, url, validatorOf(resp.Header)); err != nil {
+		return 0, false, err
 	}
 	var body io.Reader = &stallReader{r: resp.Body, timer: timer}
 	if cb, ok := parent.Value(progressKey{}).(ProgressFunc); ok && cb != nil {
@@ -201,6 +263,11 @@ func fetchOnce(parent context.Context, url, tmp string) (int64, bool, error) {
 
 type rangeKey struct{}
 
+type resumeFrom struct {
+	offset    int64
+	validator string
+}
+
 const maxRedirects = 5
 
 var errRedirect = errors.New("unusable redirect")
@@ -211,8 +278,11 @@ func get(ctx context.Context, rawURL string) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
-		if from, ok := ctx.Value(rangeKey{}).(int64); ok && from > 0 {
-			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", from))
+		if from, ok := ctx.Value(rangeKey{}).(resumeFrom); ok && from.offset > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", from.offset))
+			if from.validator != "" {
+				req.Header.Set("If-Range", from.validator)
+			}
 		}
 		resp, err := fetchClient().Do(req)
 		if err != nil {
