@@ -789,6 +789,7 @@ func newUpdateServer(c cfg) *http.Server {
 	registerHistoryHandler(mux, c)
 	registerFirmwareHandlers(mux, c)
 	registerLiveHandlers(mux, c, &statuses)
+	registerNeighbourHandlers(mux, defaultNeighbourPolicy)
 	mux.HandleFunc("/reboot", func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodPost) {
 			return

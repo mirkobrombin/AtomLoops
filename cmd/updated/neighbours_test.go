@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,5 +57,30 @@ func TestTheSwitchMeteredNetworksAndALowBatteryStopSharing(t *testing.T) {
 	os.WriteFile(p.off, nil, 0o644)
 	if p.network() || p.upload() {
 		t.Fatal("the switch does not turn sharing off")
+	}
+}
+
+func TestTheSwitchIsReachableOverTheSocket(t *testing.T) {
+	p, _ := policyIn(t)
+	os.WriteFile(p.kind, []byte("work"), 0o644)
+	mux := http.NewServeMux()
+	registerNeighbourHandlers(mux, p)
+	call := func(method, path string) neighbourState {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+		var st neighbourState
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &st) != nil {
+			t.Fatalf("%s %s: %d %s", method, path, rec.Code, rec.Body)
+		}
+		return st
+	}
+	if st := call("GET", "/neighbours"); !st.Enabled || !st.Network || !st.Upload {
+		t.Fatalf("default %+v", st)
+	}
+	if st := call("POST", "/neighbours?enable=0"); st.Enabled || st.Network || st.Upload {
+		t.Fatalf("off %+v", st)
+	}
+	if st := call("POST", "/neighbours?enable=1"); !st.Enabled || !st.Upload {
+		t.Fatalf("on again %+v", st)
 	}
 }

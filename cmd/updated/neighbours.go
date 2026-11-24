@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -64,10 +66,62 @@ func read(path string) string {
 	return strings.TrimSpace(string(b))
 }
 
+var carrier *peers.Carrier
+
+func (p neighbourPolicy) setEnabled(on bool) error {
+	if on {
+		if err := os.Remove(p.off); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(p.off), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p.off, nil, 0o644)
+}
+
+type neighbourState struct {
+	Enabled bool  `json:"enabled"`
+	Network bool  `json:"network"`
+	Upload  bool  `json:"upload"`
+	Served  int64 `json:"served"`
+}
+
+func (p neighbourPolicy) state() neighbourState {
+	_, err := os.Stat(p.off)
+	st := neighbourState{Enabled: err != nil, Network: p.network(), Upload: p.upload()}
+	if carrier != nil {
+		st.Served = carrier.Server.Served()
+	}
+	return st
+}
+
+func registerNeighbourHandlers(mux *http.ServeMux, p neighbourPolicy) {
+	mux.HandleFunc("/neighbours", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+		case http.MethodPost:
+			if err := p.setEnabled(r.URL.Query().Get("enable") == "1"); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+		default:
+			w.Header().Set("Allow", "GET, POST")
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(p.state())
+	})
+}
+
 func startNeighbours(ctx context.Context, c cfg, p neighbourPolicy) *peers.Carrier {
 	s := peers.NewServer(peers.DefaultLimits())
 	s.Active = p.upload
-	carrier := peers.NewCarrier(s)
+	carrier = peers.NewCarrier(s)
 	carrier.Allowed = p.network
 	for _, r := range otad.CarriedReleases(c.wal, otad.StageDirs{Rootfs: c.rootfsDir, ESP: c.espDir}) {
 		carrier.Offer(r)
