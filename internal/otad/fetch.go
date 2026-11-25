@@ -116,6 +116,9 @@ func FetchTo(ctx context.Context, url, dest string) (int64, error) {
 			break
 		}
 	}
+	if errors.Is(last, ErrNoSpace) && resumable(tmp, url) {
+		return 0, last
+	}
 	if !retry || ctx.Err() != nil || !resumable(tmp, url) {
 		discardPartial(tmp)
 	}
@@ -237,6 +240,11 @@ func fetchOnce(parent context.Context, url, tmp string) (int64, bool, error) {
 		return 0, true, fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
 	default:
 		return 0, retryable(resp.StatusCode), fmt.Errorf("fetch %s: status %d", url, resp.StatusCode)
+	}
+	if total >= 0 {
+		if err := ensureSpace(strings.TrimSuffix(tmp, ".tmp"), total); err != nil {
+			return 0, false, err
+		}
 	}
 	if err := recordPartial(tmp, url, validatorOf(resp.Header)); err != nil {
 		return 0, false, err

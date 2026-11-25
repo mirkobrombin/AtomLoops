@@ -99,6 +99,11 @@ func stage(ctx context.Context, walPath, manifestURL, revocationURL string, root
 	}
 	rPath := filepath.Join(dirs.Rootfs, "rootfs-next.erofs")
 	_, local := ctx.Value(localDirKey{}).(string)
+	if bs, blocks, err := m.RootFSBlockPlan(); err == nil && !local {
+		if err := ensureSpace(rPath, int64(bs)*int64(len(blocks))); err != nil {
+			return "", fmt.Errorf("stage: %w", err)
+		}
+	}
 	if err := fetchRootFS(ctx, vm, m, rPath, local); err != nil {
 		return "", err
 	}
