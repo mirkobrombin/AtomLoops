@@ -66,6 +66,7 @@ type Status struct {
 	Error           string          `json:"error,omitempty"`
 	LoaderAvailable int             `json:"loader_available,omitempty"`
 	Live            *otad.LiveOffer `json:"live,omitempty"`
+	Tag             string          `json:"tag,omitempty"`
 	manifestSHA256  string
 	retryable       bool
 }
@@ -538,6 +539,7 @@ type statusStore struct {
 	ctx        context.Context
 	stop       context.CancelFunc
 	stopped    chan struct{}
+	watch      statusWatch
 }
 
 func (s *statusStore) currentLocked() Status {
@@ -593,6 +595,7 @@ func (s *statusStore) claimDownload(consentToken string) (Status, bool) {
 	s.live.State = "downloading"
 	s.live.Percent = 0
 	s.live.Error = ""
+	s.watch.notify()
 	return status, true
 }
 
@@ -603,7 +606,10 @@ func (s *statusStore) setProgress(done, total int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.live.State == "downloading" {
-		s.live.Percent = int(done * 100 / total)
+		if percent := int(done * 100 / total); percent != s.live.Percent {
+			s.live.Percent = percent
+			s.watch.notify()
+		}
 	}
 }
 
@@ -617,6 +623,7 @@ func (s *statusStore) complete(status Status) {
 		close(s.stopped)
 	}
 	s.ctx, s.stop, s.stopped = nil, nil, nil
+	s.watch.notify()
 }
 
 func (s *statusStore) downloadContext() context.Context {
@@ -648,7 +655,9 @@ func (s *statusStore) publishPoll(status Status) (Status, error) {
 	if current, ok := readState(s.statePath); ok && current.State == "ready" && !(status.State == "available" && newer(status.Latest, current.Latest)) {
 		return current, nil
 	}
-	return status, writeState(s.statePath, status)
+	err := writeState(s.statePath, status)
+	s.watch.notify()
+	return status, err
 }
 
 func claimReboot(c cfg, statuses *statusStore) (*os.File, error) {
@@ -697,6 +706,7 @@ func listenSocket(path string) (net.Listener, error) {
 // The first signed feed check starts only after serve has bound the socket.
 func newUpdateServer(c cfg) *http.Server {
 	statuses := statusStore{statePath: c.state}
+	watchStateFile(c.state, statuses.watch.notify)
 	download := func(s Status) {
 		onProg := func(done, total int64) {
 			statuses.setProgress(done, total)
@@ -740,7 +750,14 @@ func newUpdateServer(c cfg) *http.Server {
 		if !requireMethod(w, r, http.MethodGet) {
 			return
 		}
-		writeJSON(w, liveOffer(c, statuses.getForClient()))
+		st, ok := waitForStatus(r, &statuses.watch, func() Status {
+			return liveOffer(c, statuses.getForClient())
+		})
+		if !ok {
+			return
+		}
+		st.Tag = statusTag(st)
+		writeJSON(w, st)
 	})
 	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodGet) {
