@@ -32,6 +32,7 @@ type Collector struct {
 	size    int
 	last    time.Time
 	held    [][]byte
+	arm     func()
 }
 
 // MaxHeld bounds the blocks kept in memory while no reader key exists.
@@ -108,6 +109,9 @@ func (c *Collector) Add(r Record) error {
 	c.pending.Records = append(c.pending.Records, r)
 	c.size += n
 	c.last = t
+	if len(c.pending.Records) == 1 && c.arm != nil {
+		c.arm()
+	}
 	if Critical(r) {
 		return c.flushLocked()
 	}
@@ -199,18 +203,15 @@ func (c *Collector) Serve(ctx context.Context, path string) error {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
+	flush := time.AfterFunc(interval, func() { _ = c.Flush() })
+	flush.Stop()
+	c.mu.Lock()
+	c.arm = func() { flush.Reset(interval) }
+	c.mu.Unlock()
 	go func() {
-		t := time.NewTicker(interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				conn.Close()
-				return
-			case <-t.C:
-				_ = c.Flush()
-			}
-		}
+		<-ctx.Done()
+		flush.Stop()
+		conn.Close()
 	}()
 	buf := make([]byte, MaxPayload)
 	oob := make([]byte, credSpace)

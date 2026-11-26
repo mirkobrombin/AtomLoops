@@ -293,6 +293,46 @@ func TestCollectorSocket(t *testing.T) {
 	}
 }
 
+func TestCollectorIdles(t *testing.T) {
+	k := newKey(t)
+	r, _ := ring(t, 32)
+	c := &Collector{Ring: r, Reader: k.PublicKey(), Boot: 9, Interval: 200 * time.Millisecond}
+	sock := filepath.Join(t.TempDir(), "s")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Serve(ctx, sock)
+	for i := 0; i < 100; i++ {
+		if _, err := os.Stat(sock); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	flushes := 0
+	for i := 0; i < 2; i++ {
+		time.Sleep(500 * time.Millisecond)
+		if err := Emit(sock, Record{Component: compSession, Code: SessionLogin, Args: []uint64{uint64(i)}}); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if entries, _ := r.Scan(); len(entries) > flushes {
+				flushes = len(entries)
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if flushes != i+1 {
+			t.Fatalf("record %d was not flushed: %d blocks", i, flushes)
+		}
+	}
+	c.mu.Lock()
+	idle := len(c.pending.Records) == 0
+	c.mu.Unlock()
+	if !idle {
+		t.Fatal("records left pending")
+	}
+}
+
 func TestCollectorSplitsFullBlocks(t *testing.T) {
 	k := newKey(t)
 	r, _ := ring(t, 32)
