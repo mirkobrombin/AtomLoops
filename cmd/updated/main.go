@@ -67,6 +67,7 @@ type Status struct {
 	LoaderAvailable int             `json:"loader_available,omitempty"`
 	Live            *otad.LiveOffer `json:"live,omitempty"`
 	Tag             string          `json:"tag,omitempty"`
+	HeldUntil       int64           `json:"held_until,omitempty"`
 	manifestSHA256  string
 	retryable       bool
 }
@@ -125,8 +126,9 @@ func main() {
 		firmwareDir := fs.String("firmware-dir", "/boot/firmware", "firmware add-on track staging dir")
 		stageLock := fs.String("stage-lock", "/run/updated-stage.lock", "cross-process update staging lock")
 		chSpec, chFile := channelFlags(fs)
+		policy, seen := holdFlags(fs)
 		fs.Parse(os.Args[2:])
-		c := cfg{feed: *feed, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock, channels: resolveChannels(fs, *chSpec, *chFile)}
+		c := cfg{feed: *feed, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock, channels: resolveChannels(fs, *chSpec, *chFile), policy: *policy, seen: *seen}
 		statuses := statusStore{statePath: c.state}
 		st, err := statuses.publishPoll(pollOnce(c))
 		if err != nil {
@@ -151,8 +153,9 @@ func main() {
 		history := fs.String("history", defaultHistory, "installed version history")
 		livePCR := fs.Int("live-pcr", 0, "TPM PCR a live swap is measured into (0: none)")
 		chSpec, chFile := channelFlags(fs)
+		policy, seen := holdFlags(fs)
 		fs.Parse(os.Args[2:])
-		c := cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock, history: *history, livePCR: *livePCR, channels: resolveChannels(fs, *chSpec, *chFile)}
+		c := cfg{feed: *feed, sock: *sock, current: *cur, state: *state, wal: *wal, rootfsDir: *rootfsDir, espDir: *espDir, firmwareDir: *firmwareDir, stageLock: *stageLock, history: *history, livePCR: *livePCR, channels: resolveChannels(fs, *chSpec, *chFile), policy: *policy, seen: *seen}
 		if err := serve(c); err != nil {
 			fmt.Fprintf(os.Stderr, "updated: serve: %v\n", err)
 			os.Exit(1)
@@ -418,6 +421,7 @@ type cfg struct {
 	history                    string
 	livePCR                    int
 	channels                   channels
+	policy, seen               string
 }
 
 // pollOnce checks the feed without downloading or staging artifacts.
@@ -427,7 +431,7 @@ func pollOnce(c cfg) Status {
 	} else if name != "" {
 		fmt.Fprintf(os.Stderr, "updated: following the %s channel the running release came from\n", name)
 	}
-	return check(c.feedURL(), c.current, c.wal)
+	return applyHold(check(c.feedURL(), c.current, c.wal), c.policy, c.seen, time.Now())
 }
 
 func installedOr(current, wal string) string {
@@ -829,6 +833,9 @@ func newUpdateServer(c cfg) *http.Server {
 		}()
 	})
 	go startupCheck(c, &statuses, 5*time.Second)
+	if c.policy != "" {
+		go releaseHeld(c, &statuses)
+	}
 	return &http.Server{Handler: mux}
 }
 
